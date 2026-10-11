@@ -67,11 +67,24 @@ salen de la base, no del modelo.
    nbwatch telegram-chat-id      # imprime TELEGRAM_CHAT_ID=... para pegar en /etc/nbwatch.env
    ```
 
-4. **Token de Claude** (suscripción, sin API key): en tu máquina, con el navegador a mano:
+4. **Token de Claude** (suscripción, sin API key). `claude setup-token` genera un token OAuth de
+   larga duración atado a tu suscripción, para que el LXC pueda usar `claude -p` sin login
+   interactivo. Hay dos formas de correrlo:
+   - **En tu PC**, si usás la extensión de VS Code (trae el binario aunque `claude` no esté en el PATH):
+     ```bash
+     "$(ls -d ~/.vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude | sort -V | tail -1)" setup-token
+     ```
+   - **En el LXC**, con el Claude Code que instaló `install.sh` (te muestra una URL para abrir en el
+     navegador de tu PC):
+     ```bash
+     runuser -u nbwatch -- /var/lib/nbwatch/.local/bin/claude setup-token
+     ```
+   En los dos casos autorizás en el navegador y al final se imprime el token. Pegalo en
+   `CLAUDE_CODE_OAUTH_TOKEN` en `/etc/nbwatch.env`, y en ningún otro lado (es un secreto).
+   Para probar que anda (dentro del LXC, como root):
    ```bash
-   claude setup-token
+   (set -a; . /etc/nbwatch.env; set +a; echo 'respondé solo: ok' | runuser -u nbwatch -- "$CLAUDE_BIN" -p)
    ```
-   Pegá el token en `CLAUDE_CODE_OAUTH_TOKEN` en `/etc/nbwatch.env`.
 
 5. **Probar** (ver la sección siguiente) y **activar los timers**:
    ```bash
