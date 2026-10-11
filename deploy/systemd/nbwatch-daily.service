@@ -1,0 +1,14 @@
+[Unit]
+Description=nbwatch: scrape + juicio diario con claude -p
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=nbwatch
+Group=nbwatch
+EnvironmentFile=/etc/nbwatch.env
+WorkingDirectory=/opt/nbwatch
+ExecStart=/opt/nbwatch/venv/bin/python -m nbwatch daily
+TimeoutStartSec=90min
+Nice=10
