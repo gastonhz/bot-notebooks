@@ -81,7 +81,8 @@ def print_dry_run(cfg, name, listings):
             rejected[v.reasons[0].split(" (")[0]] += 1
     print(f"\n=== {name}: {len(listings)} listados, {len(passed)} pasan el prefiltro")
     for l, v in sorted(passed, key=lambda x: x[0].price or 0):
-        print(f"  ✔ {fmt_eur(l.price):>12} | {squash(l.store, 18):18} | {v.gpu:7} | {squash(l.title, 80)}"
+        cpu = f"{v.cpu} ({v.cpu_tier[-1]})" if v.cpu else "?"
+        print(f"  ✔ {fmt_eur(l.price):>12} | {squash(l.store, 18):18} | {v.gpu:7} | {squash(cpu, 16):16} | {squash(l.title, 80)}"
               + (f"  [{', '.join(v.flags)}]" if v.flags else ""))
     for reason, n in rejected.most_common(8):
         print(f"  ✘ {n:3} × {reason}")

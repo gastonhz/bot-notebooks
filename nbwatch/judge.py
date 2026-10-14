@@ -68,6 +68,7 @@ def collect_candidates(cfg, db):
             "title": row["title"],
             "mpn": mpns[0] if mpns else None,
             "gpu": v.gpu,
+            "cpu": f"{v.cpu} (nivel {v.cpu_tier[-1]})" if v.cpu else None,
             "store": row["store"],
             "store_type": "chica" if v.small_store else "grande",
             "store_rating": extra.get("store_rating"),
@@ -126,6 +127,11 @@ def build_prompt(cfg, cands, mode, history):
         f"- {h.get('date')}: [{h.get('verdict')}] {h.get('title')} — {h.get('store')} — {fmt_eur(h.get('price'))}"
         for h in history
     ) or "- (nada)"
+    known = "\n".join(
+        f"- {k['name']}{' — MPN ' + k['mpn'] if k.get('mpn') else ''} — {k['specs']} — {fmt_eur(k['price'])} "
+        f"en {k['where']}.{' ' + k['note'] if k.get('note') else ''}"
+        for k in cfg.get("known_options") or []
+    ) or "- (ninguna)"
     cand_json = "[\n" + ",\n".join(json.dumps(c, ensure_ascii=False) for c in cands) + "\n]"
     return f"""{cfg.judge_prompt_path.read_text(encoding='utf-8')}
 
@@ -142,7 +148,11 @@ def build_prompt(cfg, cands, mode, history):
 
 # Plan B
 
-{pb['name']} — MPN {pb['mpn']} — {pb['specs']} — {fmt_eur(pb['price'])} en {pb['where']}.
+{pb['name']} — MPN {pb['mpn']} — {pb['specs']} — {fmt_eur(pb['price'])} en {pb['where']}.{' Estado: ' + pb['status'] if pb.get('status') else ''}
+
+# Otras opciones conocidas
+
+{known}
 
 # Ya notificado en los últimos días (no repetir salvo baja de precio o cambio relevante)
 
@@ -150,7 +160,8 @@ def build_prompt(cfg, cands, mode, history):
 
 # Candidatos ({len(cands)}, ya prefiltrados por reglas; precios en EUR, total con envío)
 
-Campos: id (usalo en picks/best_current), store_type (grande/chica), store_rating (sobre 5) y
+Campos: id (usalo en picks/best_current), cpu (modelo detectado y su nivel; si falta, flags dice
+"CPU no identificado"), store_type (grande/chica), store_rating (sobre 5) y
 store_reviews (del comparador), payments, availability/delivery (si la fuente los da), flags
 (señales del prefiltro), new_since_last_judgment, prev_price/min_price_seen (historial).
 

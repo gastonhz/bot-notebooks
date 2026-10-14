@@ -27,16 +27,18 @@ Cloudflare Turnstile), pero sus ofertas llegan a través de los comparadores. Lo
 si una fuente deja de devolver resultados o muestra un captcha, llega un aviso por Telegram
 (y otro cuando se recupera). Ninguna fuente falla en silencio.
 
-**Prefiltro** (reglas fijas, en `criteria.yaml`): GPU aceptada (5060 o superior), precio total
-entre `min_sane` y el tope duro, disponible, tienda no bloqueada, sin "ricondizionato" y similares.
+**Prefiltro** (reglas fijas, en `criteria.yaml`): GPU aceptada (5060 o superior; 5050/4060/4070 entran
+marcadas para penalizar), CPU por niveles (los de gama baja se descartan, los de nivel 3 entran marcados
+y el no identificado pasa con aviso), precio total entre `min_sane` y el tope duro, disponible, tienda
+no bloqueada, sin "ricondizionato" y similares.
 Las tiendas chicas entran si aceptan Visa/Mastercard y tienen rating y opiniones suficientes,
 cuando el comparador muestra esos datos. Los vendedores "Marketplace" de Amazon se tratan como
 tienda chica.
 
 **Juez**: recibe los candidatos (deduplicados, con historial de precio y señales del prefiltro),
-la referencia, el plan B y lo ya notificado. Puede usar WebSearch y WebFetch para verificar specs
-por MPN (TGP, slots, panel) y devuelve JSON validado por esquema. Los links y precios del mensaje
-salen de la base, no del modelo.
+la referencia, el plan B, las otras opciones conocidas y lo ya notificado. Puede usar WebSearch y
+WebFetch para verificar specs por MPN (TGP, slots, panel, cargador) y devuelve JSON validado por
+esquema. Los links y precios del mensaje salen de la base, no del modelo.
 
 ## Archivos
 
@@ -96,7 +98,7 @@ nbwatch status                       # 4. salud de fuentes, candidatos actuales,
 nbwatch judge --print-prompt | less  # 5. el prompt exacto que va a recibir el juez
 nbwatch judge --dry-run              # 6. llama a claude e imprime el mensaje sin mandarlo
 nbwatch daily --force-notify         # 7. end-to-end: scrape + juez + aviso a Telegram aunque el juez diga que no
-nbwatch judge --mode post --dry-run  #    simular el modo "después del 10/11"
+nbwatch judge --mode post --dry-run  #    simular el modo "después de la fecha de corte"
 ```
 
 Sin el LXC (en cualquier Linux con escritorio), desde la carpeta del proyecto:
@@ -120,7 +122,7 @@ Mensajes que pueden llegar:
 | Mensaje | Cuándo |
 |---|---|
 | 🟢 / 🟡 nbwatch — … | Juicio diario con algo para mirar (🟢 = "comprar", 🟡 = "considerar") |
-| ℹ️ nbwatch — … | Juicio diario sin picks (desde el 10/11 llega igual, con la mejor opción) |
+| ℹ️ nbwatch — … | Juicio diario sin picks (desde la fecha de corte llega igual, con la mejor opción) |
 | 🚨 ¡apareció la referencia! | D73SXEA disponible en cualquier tienda a ≤ `instant_alert_max_price` |
 | 🚀 RTX 5070 Ti/5080 a … | GPU con >8 GB de VRAM a ≤ `instant_alerts.high_vram_max_price` |
 | ⚠️ la fuente X falló | N corridas seguidas con bloqueo, 0 resultados o error |
@@ -141,7 +143,7 @@ Mensajes que pueden llegar:
 
 ## Al terminar
 
-El 21/11 (`dates.end`) el sistema deja de scrapear y juzgar, y avisa una vez. Para apagarlo del todo:
+En la fecha de fin (`dates.end`) el sistema deja de scrapear y juzgar, y avisa una vez. Para apagarlo del todo:
 
 ```bash
 systemctl disable --now nbwatch-scrape.timer nbwatch-daily.timer

@@ -1,11 +1,11 @@
 # Criterios de nbwatch. Editá libremente: se relee en cada corrida (no hace falta reiniciar nada).
-# Los criterios "blandos" (TGP, slim, Linux, trampas de nombres, etc.) están en texto libre en judge_prompt.md.
+# Los criterios "blandos" (TGP, slim, cargador, Linux, trampas de nombres, etc.) están en texto libre en judge_prompt.md.
 
 # --- Fechas (hora de Italia) ---
 dates:
-  cutoff: 2026-11-10      # desde acá el aviso diario siempre trae la mejor opción disponible
-  deliver_by: 2026-11-18  # tiene que estar entregada en el domicilio en Italia como tarde este día
-  end: 2026-11-21         # después de esta fecha el sistema no scrapea ni juzga más
+  cutoff: 2026-10-17      # desde acá el aviso diario siempre trae la mejor opción disponible
+  deliver_by: 2026-10-31  # tiene que estar entregada en el domicilio en Italia como tarde este día
+  end: 2026-10-31         # después de esta fecha el sistema no scrapea ni juzga más
 
 # --- Precio (TOTAL con envío, en EUR) ---
 price:
@@ -15,11 +15,45 @@ price:
   min_sane: 700           # por debajo: precio sospechoso (accesorio, error, estafa) -> descartado
 
 # --- GPU ---
+# Se detectan en título/specs; gana el modelo más específico ("5070 Ti" antes que "5070").
+# Todas las de estas listas tienen 8 GB de VRAM o más. Las que no están (4050, 3050, sin dedicada) se descartan.
 gpus:
-  # Se aceptan solo estas (se detectan en título/specs). Todo lo demás (5050, 4050, 3050, sin dedicada) se descarta.
-  accepted: ["5060", "5070", "5070 Ti", "5080", "5090", "4080", "4090"]
+  preferred: ["5060", "5070", "5070 Ti", "5080", "5090", "4080", "4090"]
+  # 8 GB por debajo de la 5060: pasan al juez con penalización fuerte.
+  fallback: ["5050", "4060", "4070"]
   # Más de 8 GB de VRAM: tope de precio más alto y alerta inmediata si aparecen baratas.
   high_vram: ["5070 Ti", "5080", "5090", "4080", "4090"]
+
+# --- CPU ---
+# Regex (sin distinguir mayúsculas) sobre el título y, si ahí no hay nada, sobre las specs. Antes se
+# normaliza el texto: se sacan ™/®, " - " pasa a ser un espacio (HP Store escribe "Ryzen™ AI 7 - 350")
+# y se colapsan los espacios. Los niveles se recorren en orden tier1 -> tier2 -> tier3 -> avoid y gana
+# el primer match. El juez ve el modelo detectado y su nivel.
+cpus:
+  unknown: judge          # CPU no detectado: judge = pasa al juez con aviso; discard = se descarta
+  tier1:                  # buscados
+    - {name: "Ryzen 9 8940HX / 7940HX / 7945HX", re: '\b(8940|794[05])HX(3D)?\b'}
+    - {name: "Ryzen 9 9955HX / 9955HX3D / 9850HX", re: '\b(9955|9850)HX(3D)?\b'}
+    - {name: "Core Ultra 7 251HX / 255HX / 270HX, Ultra 9 275HX / 285HX / 290HX", re: '\b2(51|55|70|75|85|90)HX\b'}
+  tier2:                  # buenos, sin penalización
+    - {name: "Core Ultra 7 255H / 356H, Ultra 9 285H / 386H", re: '\b(255|285|356|386)H\b'}   # \b excluye las HX
+    # "(9 )?": HP Store escribe "Ryzen AI 9 - 9 HX 375". La serie 400 es un refresh de la 300.
+    - {name: "Ryzen AI 9 HX 370/375/470/475, AI 9 365/465", re: '\bAI 9 (9 )?(HX ?)?[34](65|70|75)\b'}
+    - {name: "Ryzen AI 7 350 / 450", re: '\bAI 7 (PRO )?[34]50\b'}
+    - {name: "Ryzen 7 7845HX", re: '\b7845HX\b'}
+    - {name: "Intel HX 13ª/14ª gen alta", re: '\b(1[34]900|13980|14700|14650|13700)HX\b'}
+  tier3:                  # pasan al juez PENALIZADOS
+    - {name: "8 núcleos Zen 4: Ryzen 7 8745HX / 8845HS / 8840HS / 250 / 260, Ryzen 9 8945HS / 270",
+       re: '\b(8745HX|884[05]HS|8945HS)\b|\bRyzen [79] 2[5-7]0\b'}
+    - {name: "Core 9 270H / i9-13900H", re: '\b270H\b|\b13900H\b'}
+    - {name: "Core Ultra 5 225H / Ultra 7 155H", re: '\b(225|155)H\b'}
+    - {name: "i7-13650HX", re: '\b13650HX\b'}
+    - {name: "Core 7 240H / i7-13620H", re: '\b240H\b|\b13620H\b'}
+  avoid:                  # se DESCARTAN
+    - {name: "Ryzen 5 220 / 230 / 240", re: '\bRyzen 5 2[2-4]0\b'}
+    - {name: "Ryzen AI 5 340 / 440", re: '\bAI 5 (PRO )?[34]40\b'}
+    - {name: "Ryzen 5 150 / 7535HS / 8645HS", re: '\bRyzen 5 150\b|\b7535H[SX]?\b|\b8645HS\b'}
+    - {name: "Core 5 210H / i5 H-HX de entrada", re: '\b210H\b|\b13420H\b|\b13450HX\b|\b12450HX?\b'}
 
 # Palabras en el título que descartan el listado.
 exclude_keywords: ["ricondizionato", "ricondizionati", "refurbished", "rigenerato", "usato",
@@ -42,7 +76,7 @@ stores:
     min_rating: 3.5         # sobre 5
     min_reviews: 20
 
-# --- Referencias ---
+# --- Referencias (el juez las recibe como contexto) ---
 reference:
   mpn: D73SXEA
   name: "HyperX OMEN 15-gb0013nlx"
@@ -56,14 +90,31 @@ plan_b:
   mpn: C9SE3EA
   name: "HP OMEN 16-am0011sl"
   specs: "Core Ultra 7 255H, RTX 5060, 32 GB, 1 TB, 16\" 2560x1600 240 Hz, FreeDOS, 2 slots M.2"
-  price: 1503.61
+  price: 1494.35
   where: "Amazon.it"
+  status: "entrega abril 2027: NO llega a tiempo; avisar solo si aparece con entrega antes de la fecha límite"
+
+# Otras opciones conocidas.
+known_options:
+  - name: "HP OMEN 16-ap0008slx"
+    mpn: D93TKEA
+    where: "Amazon.it"
+    price: 1199.99
+    specs: "Ryzen 9 8940HX, RTX 5060, 16 GB (probable 2x8), 512 GB, 16\" 1920x1200 144 Hz ~300 nits, FreeDOS, SIN cargador"
+    note: "Opción de respaldo disponible."
+  - name: "HP OMEN 16-ap0013nl"
+    where: "Unieuro"
+    price: 1499
+    specs: "Ryzen 9 8940HX, RTX 5070, 32 GB, 1 TB, 16\" 1920x1200 (\"2K\"), Windows 11 Home"
+    note: "Agotada; avisar si vuelve."
 
 # MPNs que además se buscan explícitamente en cada fuente.
-watch_mpns: ["D73SXEA", "C9SE3EA"]
+watch_mpns: ["D73SXEA", "C9SE3EA", "D93TKEA"]
 
 # Términos de búsqueda generales (cada fuente les agrega lo suyo, p. ej. "laptop"/"notebook").
-search_terms: ["rtx 5060", "rtx 5070", "rtx 5070 ti", "rtx 5080"]
+search_terms: ["rtx 5060", "rtx 5070", "rtx 5070 ti", "rtx 5080",
+               "rtx 5050", "rtx 4060", "rtx 4070",   # GPUs de respaldo
+               "16-ap0013nl"]                        # modelo agotado a vigilar
 
 # --- Alertas inmediatas (durante el scrape, sin juez) ---
 instant_alerts:

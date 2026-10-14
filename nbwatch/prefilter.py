@@ -1,9 +1,10 @@
-"""Filtro determinístico previo al juez: GPU, precio, disponibilidad, tienda, palabras excluidas."""
+"""Filtro determinístico previo al juez: GPU, CPU, precio, disponibilidad, tienda, palabras excluidas."""
 import json
 import re
 from dataclasses import dataclass, field
 
 GPU_RE = re.compile(r"RTX\W{0,3}(\d{4})(\s?Ti\b)?", re.I)
+CPU_TIERS = ("tier1", "tier2", "tier3", "avoid")
 MPN_RES = [
     re.compile(r"\b[A-Z0-9]{5}EA\b"),                       # HP (C9SE3EA)
     re.compile(r"\b90NR[0-9A-Z]{4}-M[0-9A-Z]{5}\b"),        # ASUS
@@ -39,6 +40,23 @@ def detect_gpu(text: str) -> str | None:
     return m.group(1) + (" Ti" if m.group(2) else "")
 
 
+def normalize_cpu_text(text: str) -> str:
+    """'Intel® Core™ Ultra 7 - 255H' -> 'Intel Core Ultra 7 255H' (HP Store separa familia y modelo con ' - ')."""
+    text = re.sub(r"[™®©]|\((?:tm|r)\)", " ", text or "", flags=re.I)
+    return re.sub(r"\s+", " ", re.sub(r"\s+-\s+", " ", text))
+
+
+def detect_cpu(text: str, cpus: dict) -> tuple[str, str] | None:
+    """(nivel, texto encontrado) del primer patrón que matchea, recorriendo los niveles en orden."""
+    text = normalize_cpu_text(text)
+    for tier in CPU_TIERS:
+        for c in cpus.get(tier) or []:
+            m = re.search(c["re"], text, re.I)
+            if m:
+                return tier, m.group(0)
+    return None
+
+
 def extract_mpns(text: str) -> list[str]:
     out = []
     for rx in MPN_RES:
@@ -50,6 +68,8 @@ def extract_mpns(text: str) -> list[str]:
 class Verdict:
     passed: bool
     gpu: str | None
+    cpu: str | None = None                        # texto detectado ("8940HX")
+    cpu_tier: str | None = None                   # tier1/tier2/tier3/avoid
     reasons: list = field(default_factory=list)   # por qué se descartó
     flags: list = field(default_factory=list)     # señales para el juez
     small_store: bool = False
@@ -80,11 +100,32 @@ def evaluate(row, cfg) -> Verdict:
     if kw:
         reject(f"palabra excluida: {kw}")
 
+    def in_list(name, values):
+        return name is not None and name.lower() in [x.lower() for x in values or []]
+
+    gpus = cfg["gpus"]
     if gpu is None:
         reject("GPU no detectada")
-    elif gpu.lower() not in [g.lower() for g in cfg["gpus"]["accepted"]]:
+    elif in_list(gpu, gpus.get("fallback")):
+        v.flags.append(f"GPU de respaldo (RTX {gpu}): penalizar fuerte")
+    elif not in_list(gpu, gpus["preferred"]):
         reject(f"GPU {gpu} no aceptada")
-    high_vram = gpu is not None and gpu.lower() in [g.lower() for g in cfg["gpus"]["high_vram"]]
+    high_vram = in_list(gpu, gpus["high_vram"])
+
+    cpus = cfg.get("cpus")
+    if cpus:
+        hit = detect_cpu(title, cpus) or detect_cpu(spec_text(row), cpus)
+        if hit is None:
+            if cpus.get("unknown", "judge") == "discard":
+                reject("CPU no identificado")
+            else:
+                v.flags.append("CPU no identificado: verificar por MPN")
+        else:
+            v.cpu_tier, v.cpu = hit
+            if v.cpu_tier == "avoid":
+                reject(f"CPU descartado ({v.cpu})")
+            elif v.cpu_tier == "tier3":
+                v.flags.append(f"CPU de nivel 3 ({v.cpu}): penalizar")
 
     price, pc = row["price"], cfg["price"]
     cap = pc["hard_cap_high_vram"] if high_vram else pc["hard_cap"]
