@@ -24,7 +24,8 @@ echo "==> Archivo de entorno $ENV_FILE"
 if [ -e "$ENV_FILE" ]; then
   echo "    ya existe: solo le agrego las variables nuevas que falten"
   [ -z "$(tail -c1 "$ENV_FILE")" ] || echo >> "$ENV_FILE"
-  for kv in "NBWATCH_CRITERIA=$STATE/criteria.yaml" NBWATCH_WEB_USER= NBWATCH_WEB_PASSWORD=; do
+  for kv in "NBWATCH_CRITERIA=$STATE/criteria.yaml" NBWATCH_WEB_USER= NBWATCH_WEB_PASSWORD= \
+            TELEGRAM_ALERT_BOT_TOKEN= TELEGRAM_ALERT_CHAT_ID=; do
     grep -q "^${kv%%=*}=" "$ENV_FILE" || { echo "$kv" >> "$ENV_FILE"; echo "    + ${kv%%=*}"; }
   done
 else

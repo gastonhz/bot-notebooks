@@ -9,7 +9,7 @@ import re
 from curl_cffi import requests
 
 from ..models import Listing
-from ..util import log, polite_sleep, squash
+from ..util import log, parse_eur, polite_sleep, squash
 from . import SourceBlocked, SourceError
 
 ALGOLIA_URL = "https://mnbcenyfii-dsn.algolia.net/1/indexes/*/queries"
@@ -23,20 +23,37 @@ def _is_notebook(hit):
     return any("Notebook" in (c.get("lvl3") or "") for c in hit.get("categoryNames_it") or [])
 
 
+def _strip_tags(html):
+    return squash(re.sub(r"<[^>]+>", " ", html or ""))
+
+
+def badges(hit) -> list[str]:
+    """Etiquetas de promoción de la ficha ("OUTLET ONLINE"), no solo la principal.
+
+    allPromotions trae "PO-X|Promo Online|OUTLET|07-10-2025_31-12-2099|OUTLET|OUTLET ONLINE_promotion";
+    las entradas sin "|" ("vslp_promotion") son códigos internos.
+    """
+    out = [_strip_tags(hit.get("primaryPromotionTitle"))]
+    out += [p.rsplit("|", 1)[-1].removesuffix("_promotion") for p in hit.get("allPromotions") or [] if "|" in p]
+    return [b for b in dict.fromkeys(out) if b]
+
+
 def to_listing(hit):
     home = ((hit.get("leadTimeSection") or {}).get("homeSection")) or {}
     stock = hit.get("stockLevelStatus")
     # sin descuento no viene discountedPrice: el precio vigente queda en facetPrice/originalPrice
-    price = hit.get("discountedPrice") or hit.get("facetPrice") or hit.get("originalPrice")
+    base = hit.get("discountedPrice") or hit.get("facetPrice") or hit.get("originalPrice")
+    cost = home.get("deliveryCost") or ""
+    shipping = 0.0 if hit.get("hasFreeDelivery") or "gratuit" in cost.lower() else parse_eur(cost)
     cats = {c.get("lvl3") or "" for c in hit.get("categoryNames_it") or []}
     return Listing(
         source="unieuro",
         offer_id=hit["code"],
         title=squash(hit.get("title_it")),
         url=BASE + (hit.get("productUrl_it") or ""),
-        price=price,
-        base_price=price,
-        shipping=0.0 if hit.get("hasFreeDelivery") else None,
+        price=base + shipping if base is not None and shipping is not None else base,
+        base_price=base,
+        shipping=shipping,
         store="Unieuro",
         available=bool(hit.get("isAvailable")) and stock != "outOfStock" and not hit.get("preOrder"),
         mpn=(hit.get("manufacturerAID") or "").split("#")[0] or None,
@@ -47,7 +64,8 @@ def to_listing(hit):
             "delivery_cost": home.get("deliveryCost"),
             "original_price": hit.get("originalPrice"),
             "slim": any("Slim" in c for c in cats),
-            "promo": squash(re.sub(r"<[^>]+>", " ", hit.get("primaryPromotionTitle") or "")) or None,
+            "promo": _strip_tags(hit.get("primaryPromotionTitle")) or None,
+            "badges": badges(hit),
         },
     )
 

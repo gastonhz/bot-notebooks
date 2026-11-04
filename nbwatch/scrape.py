@@ -1,9 +1,9 @@
 import collections
 import time
 
-from . import notify
+from . import notify, quickjudge
 from .notify import esc
-from .prefilter import evaluate
+from .prefilter import all_marks, check_buy_now, evaluate
 from .sources import SourceBlocked, SourceContext, SourceError, get_sources
 from .util import fmt_eur, log, now_utc, squash, today_rome
 
@@ -11,12 +11,13 @@ from .util import fmt_eur, log, now_utc, squash, today_rome
 def listing_row(l) -> dict:
     """Listing -> dict con las mismas claves que una fila de la DB (para evaluate())."""
     return {"title": l.title, "price": l.price, "available": l.available, "store": l.store,
-            "source": l.source, "extra": l.extra, "mpn": l.mpn, "url": l.url, "key": l.key}
+            "source": l.source, "extra": l.extra, "mpn": l.mpn, "url": l.url, "key": l.key,
+            "base_price": l.base_price, "shipping": l.shipping}
 
 
-def safe_send(cfg, text):
+def safe_send(cfg, text, alert=False):
     try:
-        notify.send(cfg, text)
+        return notify.send(cfg, text, alert=alert)
     except Exception as e:
         log.error("no se pudo mandar a Telegram: %s", e)
 
@@ -40,18 +41,25 @@ def update_health(cfg, db, name, error, count):
     db.set_health(name, consecutive_failures=fails, last_error=error, last_count=count, alerted=alerted)
 
 
-def _alert_once(cfg, db, kind, row, header):
+def _alert_once(cfg, db, kind, row, header, v, bn):
     prev = db.alert_sent(kind, row["key"])
     if prev and prev["price"] is not None and row["price"] is not None and row["price"] >= prev["price"] - 0.5:
         return
     avail = {1: "disponible", 0: "no disponible"}.get(row["available"], "disponibilidad desconocida")
-    safe_send(cfg, (
-        f"{header}\n\n{esc(row['title'])}\n"
-        f"💶 <b>{fmt_eur(row['price'])}</b> total · {esc(row['store'])} · {avail} · vía {row['source']}\n"
-        f"🔗 <a href=\"{esc(row['url'])}\">ver oferta</a>\n"
-        f"<i>Alerta automática, sin pasar por el juez: verificá MPN, vendedor y plazo de entrega.</i>"
-    ))
+    lines = [header, "", esc(row["title"]),
+             f"💶 <b>{fmt_eur(row['price'])}</b> total · {esc(row['store'])} · {avail} · vía {row['source']}"]
+    if v.marks:
+        lines.append(esc(" · ".join(v.marks)))
+    if bn and bn.missing and not bn.failed:
+        lines.append(f"ℹ️ Podría ser COMPRAR YA, pero falta: {esc(', '.join(bn.missing))}.")
+    lines.append(f"🔗 <a href=\"{esc(row['url'])}\">ver oferta</a>")
+    quick = quickjudge.claim(cfg, db, row)
+    lines.append("<i>Alerta automática, sin pasar por el juez: verificá MPN, vendedor y plazo de entrega."
+                 + (" El veredicto rápido llega como respuesta en unos minutos." if quick else "") + "</i>")
+    msg_id = safe_send(cfg, "\n".join(lines), alert=True)
     db.mark_alert(kind, row["key"], row["price"])
+    if quick:
+        quickjudge.launch(cfg, row, v, bn, msg_id)
 
 
 def check_instant_alerts(cfg, db, since_ts):
@@ -60,14 +68,20 @@ def check_instant_alerts(cfg, db, since_ts):
     high_vram = [g.lower() for g in cfg["gpus"]["high_vram"]]
     vram_cap = cfg.get("instant_alerts", {}).get("high_vram_max_price")
     for row in db.listings_since(since_ts):
+        v = evaluate(row, cfg)
+        bn = check_buy_now(row, v, cfg) if v.passed else None
         haystack = f"{row['title']} {row['mpn'] or ''} {row['url'] or ''}".lower()
         if ref_mpn in haystack:
             if row["available"] != 0 and row["price"] and row["price"] <= ref["instant_alert_max_price"]:
-                _alert_once(cfg, db, "reference", row, f"🚨 <b>nbwatch: ¡apareció la referencia {ref['mpn']}!</b>")
+                _alert_once(cfg, db, "reference", row, f"🚨 <b>nbwatch: ¡apareció la referencia {ref['mpn']}!</b>",
+                            v, bn)
             continue
-        v = evaluate(row, cfg)
-        if vram_cap and v.passed and v.gpu and v.gpu.lower() in high_vram and row["price"] <= vram_cap:
-            _alert_once(cfg, db, "high_vram", row, f"🚀 <b>nbwatch: RTX {v.gpu} a {fmt_eur(row['price'])}</b>")
+        if bn and bn.ok:  # dispara aunque no cumpla las otras condiciones
+            _alert_once(cfg, db, "buy_now", row,
+                        f"🟢 <b>nbwatch: COMPRAR YA</b> — RTX {v.gpu} a {fmt_eur(row['price'])}", v, bn)
+        elif vram_cap and v.passed and v.gpu and v.gpu.lower() in high_vram and row["price"] <= vram_cap:
+            _alert_once(cfg, db, "high_vram", row, f"🚀 <b>nbwatch: RTX {v.gpu} a {fmt_eur(row['price'])}</b>",
+                        v, bn)
 
 
 def print_dry_run(cfg, name, listings):
@@ -82,8 +96,9 @@ def print_dry_run(cfg, name, listings):
     print(f"\n=== {name}: {len(listings)} listados, {len(passed)} pasan el prefiltro")
     for l, v in sorted(passed, key=lambda x: x[0].price or 0):
         cpu = f"{v.cpu} ({v.cpu_tier[-1]})" if v.cpu else "?"
+        marks = all_marks(v, check_buy_now(listing_row(l), v, cfg))
         print(f"  ✔ {fmt_eur(l.price):>12} | {squash(l.store, 18):18} | {v.gpu:7} | {squash(cpu, 16):16} | {squash(l.title, 80)}"
-              + (f"  [{', '.join(v.flags)}]" if v.flags else ""))
+              + (f"  {' · '.join(marks)}" if marks else "") + (f"  [{', '.join(v.flags)}]" if v.flags else ""))
     for reason, n in rejected.most_common(8):
         print(f"  ✘ {n:3} × {reason}")
 

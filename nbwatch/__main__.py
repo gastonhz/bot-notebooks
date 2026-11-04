@@ -3,7 +3,7 @@ import logging
 import sys
 from datetime import datetime, timedelta, timezone
 
-from . import notify
+from . import notify, quickjudge
 from .config import Config
 from .db import DB
 from .judge import _iso_hours_ago, collect_candidates, run_judge
@@ -62,6 +62,9 @@ def cmd_test_notify(cfg, db, args):
         sys.exit("Falta TELEGRAM_BOT_TOKEN y/o TELEGRAM_CHAT_ID en el entorno.")
     notify.send(cfg, f"🧪 <b>nbwatch</b>: notificación de prueba ({esc(now_utc())}). Si leés esto, Telegram anda.")
     print("Mensaje de prueba enviado.")
+    if notify.alert_channel(cfg):
+        notify.send(cfg, f"🧪 <b>nbwatch</b>: prueba del canal de alertas inmediatas ({esc(now_utc())}).", alert=True)
+        print("Mensaje de prueba enviado al canal de alertas.")
 
 
 def cmd_telegram_chat_id(cfg, db, args):
@@ -112,7 +115,8 @@ def main(argv=None):
     p.add_argument("--dry-run", action="store_true", help="llama a claude pero imprime el mensaje en vez de mandarlo")
     p.add_argument("--print-prompt", action="store_true", help="solo imprime el prompt (no llama a claude)")
     p.add_argument("--force-notify", action="store_true", help="manda el mensaje aunque el juez diga que no")
-    p.add_argument("--mode", choices=["pre", "post"], help="forzar el modo (pre/post fecha de corte)")
+    p.add_argument("--mode", choices=["pre", "post", "decide"],
+                   help="forzar el modo (pre/post fecha de corte, decide = desde dates.decide_by)")
     p.set_defaults(func=cmd_judge, locked=True)
 
     p = sub.add_parser("daily", help="scrape + juicio (lo que corre el timer diario)")
@@ -147,6 +151,10 @@ def main(argv=None):
     scheduled = args.locked and not getattr(args, "dry_run", False) and not getattr(args, "print_prompt", False)
     try:
         if args.locked:
+            # un valor inválido corta acá, con un mensaje claro, y no a mitad de la corrida
+            problems = cfg.problems()
+            if problems:
+                raise ValueError(f"{cfg.criteria_path.name} inválido: " + "; ".join(problems))
             with file_lock(cfg.lock_path):
                 args.func(cfg, db, args)
         else:
@@ -159,6 +167,7 @@ def main(argv=None):
             _report_crash(cfg, db, args.command, e)
         sys.exit(1)
     finally:
+        quickjudge.wait()  # fuera del lock: el daily no espera a los veredictos rápidos
         db.close()
 
 

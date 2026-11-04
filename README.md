@@ -9,8 +9,9 @@ Telegram; si no, silencio. Desde la fecha de corte avisa todos los días con la 
 ```
 cada ~4 h   nbwatch scrape ──► fuentes ──► SQLite (historial de precios)
                                    │
-                                   ├─► alerta inmediata: vuelve la referencia D73SXEA,
-                                   │   o aparece una GPU con >8 GB de VRAM barata
+                                   ├─► alerta inmediata: vuelve la referencia D73SXEA, aparece una
+                                   │   GPU con >8 GB de VRAM barata o algo cumple buy_now ("🟢 COMPRAR YA")
+                                   │   └─► veredicto rápido en segundo plano (claude -p, solo ese producto)
                                    └─► alerta de salud: una fuente falló N veces seguidas
 09:00 (AR)  nbwatch daily  ──► scrape + prefiltro + claude -p ──► Telegram (o silencio)
 ```
@@ -35,10 +36,31 @@ Las tiendas chicas entran si aceptan Visa/Mastercard y tienen rating y opiniones
 cuando el comparador muestra esos datos. Los vendedores "Marketplace" de Amazon se tratan como
 tienda chica.
 
-**Juez**: recibe los candidatos (deduplicados, con historial de precio y señales del prefiltro),
-la referencia, el plan B, las otras opciones conocidas y lo ya notificado. Puede usar WebSearch y
-WebFetch para verificar specs por MPN (TGP, slots, panel, cargador) y devuelve JSON validado por
-esquema. Los links y precios del mensaje salen de la base, no del modelo.
+**Marcas** (no descartan; se ven en los avisos y le llegan al juez):
+- `⚠️ sospechoso`: precio por debajo de `min_sane` o de `price.suspicious_below` para esa GPU, con
+  `suspicious_action: flag`. Con `discard` (el valor por defecto) se descarta.
+- `🏷️ palabra`: una de `flag_keywords` en el título, las specs o las etiquetas de la tienda (el
+  "OUTLET ONLINE" de Unieuro es una etiqueta, no parte del título). `exclude_keywords` tiene prioridad.
+  La búsqueda es por subcadena, así que "reso" también aparece dentro de "compreso".
+- `🟢 COMPRAR YA`: cumple todas las condiciones de `buy_now`: GPU, nivel de CPU, RAM, almacenamiento,
+  precio, tienda confiable sin marketplace (lo que llega por Idealo cuenta como vendedor sin confirmar)
+  y entrega estimada antes de `deliver_by`. Si falta un dato no se marca, y la alerta dice cuál faltó.
+  Además, dispara la alerta inmediata por sí sola.
+
+**Veredicto rápido** (`instant_alerts.quick_judge`): después de cada alerta inmediata, `claude -p`
+revisa solo ese producto en segundo plano: vendedor y envío reales, reseñas recientes, coherencia de
+la ficha, precio y marcas. La respuesta llega como reply a la alerta. Hay uno solo por producto,
+tienda y precio. Si falla o pasa `quick_judge_timeout_minutes`, llega un aviso corto y no se reintenta.
+
+**Juez**: recibe los candidatos (deduplicados, con historial de precio, señales del prefiltro, marcas
+y si cumplen `buy_now`), la referencia, el plan B, las otras opciones conocidas y lo ya notificado.
+Puede usar WebSearch y WebFetch para verificar specs por MPN (TGP, slots, panel, cargador) y devuelve
+JSON validado por esquema. Los links y precios del mensaje salen de la base, no del modelo. Desde
+`dates.decide_by` el aviso diario pasa a "⏰ Decidí hoy": siempre trae la mejor opción disponible y,
+como respaldo, la opción conocida cuya nota empieza con "Plan C".
+
+`criteria.yaml` se valida al arrancar cada corrida: un valor inválido corta ahí con un mensaje claro
+(y el aviso 💥), no a mitad de camino.
 
 ## Archivos
 
@@ -96,6 +118,10 @@ Para probarla fuera del LXC: `NBWATCH_WEB_USER=yo NBWATCH_WEB_PASSWORD=algo venv
    ```bash
    nbwatch telegram-chat-id      # imprime TELEGRAM_CHAT_ID=... para pegar en /etc/nbwatch.env
    ```
+   Opcional, para que las alertas inmediatas suenen distinto del resumen diario (con
+   `instant_alerts.priority: high`): creá un segundo bot y poné su token en `TELEGRAM_ALERT_BOT_TOKEN`
+   (el chat_id es el mismo), o mandalas a otro chat con `TELEGRAM_ALERT_CHAT_ID`. En Telegram le ponés
+   a ese chat su propio sonido. `nbwatch test-notify` prueba los dos canales.
 
 4. **Token de Claude** (suscripción, sin API key): en tu máquina, con el navegador a mano:
    ```bash
@@ -154,8 +180,11 @@ Mensajes que pueden llegar:
 |---|---|
 | 🟢 / 🟡 nbwatch — … | Juicio diario con algo para mirar (🟢 = "comprar", 🟡 = "considerar") |
 | ℹ️ nbwatch — … | Juicio diario sin picks (desde la fecha de corte llega igual, con la mejor opción) |
+| ⏰ Decidí hoy | Juicio diario desde `dates.decide_by`: mejor opción disponible + Plan C |
 | 🚨 ¡apareció la referencia! | D73SXEA disponible en cualquier tienda a ≤ `instant_alert_max_price` |
+| 🟢 COMPRAR YA — RTX … | Algo cumple todas las condiciones de `buy_now` |
 | 🚀 RTX 5070 Ti/5080 a … | GPU con >8 GB de VRAM a ≤ `instant_alerts.high_vram_max_price` |
+| 🔎 Veredicto rápido | Respuesta a una alerta inmediata, con la revisión de ese producto |
 | ⚠️ la fuente X falló | N corridas seguidas con bloqueo, 0 resultados o error |
 | 💥 nbwatch … falló | La corrida entera rompió (máximo 1 aviso cada 12 h por el mismo error) |
 | 💤 sigue vivo | Los lunes, si ese día no hubo aviso |

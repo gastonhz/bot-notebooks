@@ -137,7 +137,7 @@ function render(d, okMsg) {
     const n = d.candidates.length, changed = d.removed.length || d.candidates.some((c) => c.added);
     h += `<p>Candidatos para el juez: <b>${n}</b>${changed ? ` (con lo guardado: ${d.saved_count})` : ""}</p>`;
     h += `<p class="small">${d.recent} listados vistos en las últimas ${d.lookback_hours} h · ` +
-         `último scrape: ${esc(when(d.last_scrape))} · modo ${d.mode === "post" ? "post-corte" : "pre-corte"}</p>`;
+         `último scrape: ${esc(when(d.last_scrape))} · modo ${{ pre: "pre-corte", post: "post-corte", decide: "decidí hoy" }[d.mode]}</p>`;
     if (n || d.removed.length) {
       h += `<div class="table"><table>` + d.candidates.map((c) => row(c, c.added ? "add" : "")).join("") +
            d.removed.map((c) => row(c, "del", ` · <b>sale: ${esc(c.why)}</b>`)).join("") + `</table></div>`;

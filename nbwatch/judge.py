@@ -1,12 +1,11 @@
 import json
-import re
 import subprocess
 import tempfile
 from datetime import datetime, timedelta, timezone
 
 from . import notify
 from .notify import esc
-from .prefilter import evaluate, extract_mpns, row_extra, spec_text
+from .prefilter import all_marks, check_buy_now, evaluate, extract_mpns, product_key, row_extra, spec_text
 from .util import fmt_eur, log, squash, today_rome
 
 SCHEMA = {
@@ -61,6 +60,7 @@ def collect_candidates(cfg, db):
         v = evaluate(row, cfg)
         if not v.passed:
             continue
+        bn = check_buy_now(row, v, cfg)
         extra = row_extra(row)
         mpns = [row["mpn"]] if row["mpn"] else extract_mpns(f"{row['title']} {spec_text(row)}")
         cand = {
@@ -83,6 +83,9 @@ def collect_candidates(cfg, db):
             "coupon": extra.get("coupon"),
             "specs": extra.get("specs") or extra.get("desc") or None,
             "flags": v.flags or None,
+            "marks": all_marks(v, bn) or None,
+            "buy_now": True if bn and bn.ok else None,
+            "buy_now_failed": bn.failed + [f"falta {m}" for m in bn.missing] if bn and not bn.ok else None,
             "source": row["source"],
             "first_seen": row["first_seen"][:10],
             "new_since_last_judgment": last_ts is None or row["first_seen"] > last_ts,
@@ -90,7 +93,7 @@ def collect_candidates(cfg, db):
             "min_price_seen": row["min_price"] if row["min_price"] != row["price"] else None,
         }
         cand = {k: val for k, val in cand.items() if val not in (None, [], {}, "")}
-        group = (cand.get("mpn") or re.sub(r"\W+", " ", row["title"].lower())[:70], (row["store"] or "").lower())
+        group = product_key(row)
         if group not in best or row["price"] < best[group]["price_total"]:
             best[group] = cand
     cands = sorted(best.values(), key=lambda c: c["price_total"])
@@ -106,7 +109,17 @@ def notified_history(db, days=10):
 
 
 def current_mode(cfg):
-    return "post" if today_rome() >= cfg.dates["cutoff"] else "pre"
+    """pre: antes del corte · post: desde el corte · decide: desde dates.decide_by ("decidí hoy")."""
+    today = today_rome()
+    if cfg.dates.get("decide_by") and today >= cfg.dates["decide_by"]:
+        return "decide"
+    return "post" if today >= cfg.dates["cutoff"] else "pre"
+
+
+def plan_c(cfg):
+    """La opción conocida cuya nota empieza con "Plan C": el respaldo del modo "decidí hoy"."""
+    return next((k for k in cfg.get("known_options") or []
+                 if str(k.get("note") or "").lower().startswith("plan c")), None)
 
 
 def build_prompt(cfg, cands, mode, history, instructions=None):
@@ -116,7 +129,22 @@ def build_prompt(cfg, cands, mode, history, instructions=None):
     d, pc, ref, pb = cfg.dates, cfg["price"], cfg["reference"], cfg["plan_b"]
     today = today_rome()
     days_left = (d["deliver_by"] - today).days
-    if mode == "pre":
+    decide = ""
+    if d.get("decide_by"):
+        state = ("ya llegó: hay que decidir hoy" if today >= d["decide_by"]
+                 else f"faltan {(d['decide_by'] - today).days} días")
+        decide = f"\n- Fecha para decidir la compra: {d['decide_by']} ({state})"
+    if mode == "decide":
+        pc_opt = plan_c(cfg)
+        backup = (f"el Plan C ({pc_opt['name']}, {fmt_eur(pc_opt['price'])} en {pc_opt['where']})" if pc_opt
+                  else "no hay Plan C definido")
+        rules = (
+            f"MODO DECIDÍ HOY (desde el {d['decide_by']}): la pregunta es \"¿qué se compra hoy para que llegue "
+            f"a tiempo?\". El aviso sale siempre (notify=true) y best_current es obligatorio si hay algo aceptable. "
+            f"El respaldo es {backup}: decí en notes si la mejor opción disponible le gana o si conviene el respaldo. "
+            f"Sé estricto con los plazos: quedan {days_left} días para la entrega límite."
+        )
+    elif mode == "pre":
         rules = (
             f"MODO PRE-CORTE (hasta el {d['cutoff']}): la pregunta es \"¿hay algo que supere a la referencia?\" "
             "(precio/specs comparables o mejores, contando el valor de la RAM). notify=true solo si hay al menos un "
@@ -140,12 +168,20 @@ def build_prompt(cfg, cands, mode, history, instructions=None):
         for k in cfg.get("known_options") or []
     ) or "- (ninguna)"
     cand_json = "[\n" + ",\n".join(json.dumps(c, ensure_ascii=False) for c in cands) + "\n]"
+    new_fields = ""
+    if pc.get("suspicious_action") == "flag" or cfg.get("flag_keywords") or cfg.get("buy_now"):
+        new_fields += ("\nmarks (marcas que también ve el comprador: \"⚠️ sospechoso\" = precio bajo para esa GPU, con el "
+                       "motivo; \"🏷️ palabra\" = encontrada en título, specs o etiquetas de la tienda, p. ej. outlet; "
+                       "\"🟢 COMPRAR YA\" = cumple la regla de compra inmediata).")
+    if cfg.get("buy_now"):
+        new_fields += ("\nbuy_now (true si cumple la regla de compra inmediata) o buy_now_failed (qué condiciones "
+                       "no cumple o qué dato falta para saberlo).")
     return f"""{instructions}
 
 # Datos de hoy
 
 - Fecha (Italia): {today.isoformat()}
-- Entrega límite en el domicilio en Italia: {d['deliver_by']} (quedan {days_left} días)
+- Entrega límite en el domicilio en Italia: {d['deliver_by']} (quedan {days_left} días){decide}
 - Tope de precio objetivo: {pc['target']} € total (tope duro {pc['hard_cap']} €; {pc['hard_cap_high_vram']} € con más de 8 GB de VRAM)
 - {rules}
 
@@ -170,16 +206,17 @@ def build_prompt(cfg, cands, mode, history, instructions=None):
 Campos: id (usalo en picks/best_current), cpu (modelo detectado y su nivel; si falta, flags dice
 "CPU no identificado"), store_type (grande/chica), store_rating (sobre 5) y
 store_reviews (del comparador), payments, availability/delivery (si la fuente los da), flags
-(señales del prefiltro), new_since_last_judgment, prev_price/min_price_seen (historial).
+(señales del prefiltro), new_since_last_judgment, prev_price/min_price_seen (historial).{new_fields}
 
 {cand_json}
 """
 
 
-def call_claude(cfg, prompt) -> dict:
+def call_claude(cfg, prompt, schema=SCHEMA, timeout_minutes=None) -> dict:
     j = cfg["judge"]
+    timeout_minutes = timeout_minutes or j.get("timeout_minutes", 20)
     tools = ",".join(j.get("tools") or [])
-    cmd = [cfg.claude_bin, "-p", "--output-format", "json", "--json-schema", json.dumps(SCHEMA),
+    cmd = [cfg.claude_bin, "-p", "--output-format", "json", "--json-schema", json.dumps(schema),
            "--tools", tools, "--no-session-persistence", "--strict-mcp-config"]
     if tools:
         cmd += ["--allowedTools", tools]
@@ -190,11 +227,11 @@ def call_claude(cfg, prompt) -> dict:
         # directorio vacío: el juez no tiene nada local para leer
         with tempfile.TemporaryDirectory(prefix="nbwatch-judge-") as tmp:
             proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
-                                  timeout=j.get("timeout_minutes", 20) * 60, cwd=tmp)
+                                  timeout=timeout_minutes * 60, cwd=tmp)
     except FileNotFoundError:
         raise JudgeError(f"no encuentro el binario de Claude Code ({cfg.claude_bin}); configurá CLAUDE_BIN")
     except subprocess.TimeoutExpired:
-        raise JudgeError(f"claude -p no terminó en {j.get('timeout_minutes', 20)} minutos")
+        raise JudgeError(f"claude -p no terminó en {timeout_minutes:g} minutos")
     try:
         res = json.loads(proc.stdout)
     except json.JSONDecodeError:
@@ -212,14 +249,30 @@ def call_claude(cfg, prompt) -> dict:
     return out
 
 
-def _offer_line(row):
+def _offer_line(cfg, row):
     extra = row_extra(row)
     bits = [f"💶 <b>{fmt_eur(row['price'])}</b>", esc(row["store"]), f"vía {row['source']}"]
     if extra.get("delivery"):
         bits.append(f"entrega {esc(extra['delivery'])}")
     if extra.get("coupon"):
         bits.append(f"cupón {esc(extra['coupon'])}")
-    return " · ".join(bits)
+    v = evaluate(row, cfg)
+    marks = all_marks(v, check_buy_now(row, v, cfg))
+    return " · ".join(bits) + (f"\n{esc(' · '.join(marks))}" if marks else "")
+
+
+def decide_header(cfg):
+    d = cfg.dates
+    return (f"⏰ <b>Decidí hoy: quedan {(d['deliver_by'] - today_rome()).days} días para la entrega límite "
+            f"({d['deliver_by']:%d/%m})</b>")
+
+
+def plan_c_lines(cfg):
+    k = plan_c(cfg)
+    if not k:
+        return []
+    return ["", f"🛟 <b>Plan C (respaldo)</b>: {esc(k['name'])} — {fmt_eur(k['price'])} en {esc(k['where'])}",
+            esc(k["specs"])]
 
 
 def render_message(cfg, out, mode, rows):
@@ -228,15 +281,17 @@ def render_message(cfg, out, mode, rows):
     picks = [p for p in out.get("picks", []) if p["id"] in rows]
     icon = "🟢" if any(p["verdict"] == "comprar" for p in picks) else ("🟡" if picks else "ℹ️")
     days_left = (d["deliver_by"] - today).days
-    mode_txt = "¿supera a la referencia?" if mode == "pre" else "mejor opción que llega a tiempo"
-    lines = [
+    mode_txt = {"pre": "¿supera a la referencia?", "post": "mejor opción que llega a tiempo",
+                "decide": "mejor opción disponible + plan C"}[mode]
+    lines = [decide_header(cfg)] if mode == "decide" else []
+    lines += [
         f"{icon} <b>nbwatch — {esc(out.get('headline'))}</b>",
         f"<i>{today:%d/%m} · {mode_txt} · entrega límite {d['deliver_by']:%d/%m} (quedan {days_left} días)</i>",
     ]
     for i, p in enumerate(picks, 1):
         row = rows[p["id"]]
         lines += ["", f"<b>{i}. {p['verdict'].upper()}</b> · {esc(squash(row['title'], 150))}"]
-        lines.append(_offer_line(row))
+        lines.append(_offer_line(cfg, row))
         lines.append(f"✅ {esc(p['reason'])}")
         lines += [f"⚠️ {esc(r)}" for r in p.get("risks") or []]
         lines.append(f"🔗 <a href=\"{esc(row['url'])}\">ver oferta</a>")
@@ -248,10 +303,12 @@ def render_message(cfg, out, mode, rows):
         else:
             row = rows[bc["id"]]
             lines += ["", f"🏆 <b>Mejor opción actual</b>: {esc(squash(row['title'], 150))}"]
-            lines.append(_offer_line(row))
+            lines.append(_offer_line(cfg, row))
             lines += [f"✅ {esc(bc['reason'])}", f"🔗 <a href=\"{esc(row['url'])}\">ver oferta</a>"]
-    elif mode == "post":
+    elif mode in ("post", "decide"):
         lines += ["", "🏆 Mejor opción actual: ninguna aceptable hoy."]
+    if mode == "decide":
+        lines += plan_c_lines(cfg)
     if out.get("notes"):
         lines += ["", f"📝 {esc(out['notes'])}"]
     return "\n".join(lines)
@@ -294,9 +351,12 @@ def run_judge(cfg, db, dry_run=False, print_prompt=False, force_notify=False, mo
     log.info("modo %s, %d candidatos", mode, len(cands))
 
     if not cands:
-        if mode == "post" or force_notify:
-            notify.send(cfg, "⚠️ <b>nbwatch</b>: hoy ningún listado pasa los filtros. Revisá el estado de las "
-                             "fuentes (<code>nbwatch status</code>) o los topes en criteria.yaml.", dry_run=dry_run)
+        if mode in ("post", "decide") or force_notify:
+            text = ("⚠️ <b>nbwatch</b>: hoy ningún listado pasa los filtros. Revisá el estado de las "
+                    "fuentes (<code>nbwatch status</code>) o los topes en criteria.yaml.")
+            if mode == "decide":
+                text = "\n".join([decide_header(cfg), text, *plan_c_lines(cfg)])
+            notify.send(cfg, text, dry_run=dry_run)
         elif _heartbeat_due(cfg) and not dry_run:
             heartbeat(cfg, db, 0)
         return
@@ -306,7 +366,7 @@ def run_judge(cfg, db, dry_run=False, print_prompt=False, force_notify=False, mo
                               ({out["best_current"]["id"]} if out.get("best_current") else set()))
     valid_ids = {c["id"] for c in cands}
     rows = {k: v for k, v in rows.items() if k in valid_ids}
-    should_send = bool(out.get("notify")) or mode == "post"
+    should_send = bool(out.get("notify")) or mode in ("post", "decide")
     text = render_message(cfg, out, mode, rows)
     if force_notify and not should_send:
         text = "🧪 <b>[PRUEBA]</b> el juez no habría avisado hoy; este es su análisis:\n\n" + text

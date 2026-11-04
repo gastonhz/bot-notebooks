@@ -21,7 +21,27 @@ _REQUIRED = {
     "health": {"fail_threshold": int},
     "judge": {},
 }
-_TYPE_NAMES = {str: "un texto", list: "una lista", int: "un entero", _NUM: "un número"}
+# Secciones opcionales: si están, estas claves son obligatorias dentro.
+_REQUIRED_IF_PRESENT = {
+    "buy_now": {"gpus": list, "cpu_tiers": list, "min_ram_gb": _NUM, "min_storage_gb": _NUM, "max_price": _NUM},
+}
+# Claves opcionales: si están, tienen que ser de este tipo (o uno de estos valores).
+_OPTIONAL = {
+    "price": {"suspicious_action": ("discard", "flag"), "suspicious_below": dict},
+    "instant_alerts": {"high_vram_max_price": _NUM, "priority": ("normal", "high"), "quick_judge": bool,
+                       "quick_judge_timeout_minutes": _NUM},
+    "buy_now": {"trusted_store_only": bool, "must_deliver_by": bool},
+}
+_TYPE_NAMES = {str: "un texto", list: "una lista", int: "un entero", _NUM: "un número", dict: "un mapa",
+               bool: "true o false"}
+
+
+def _type_problem(path, value, typ) -> str | None:
+    if isinstance(typ, tuple) and all(isinstance(t, str) for t in typ):
+        return None if value in typ else f"{path}: tiene que ser {' o '.join(typ)}"
+    if isinstance(value, typ):
+        return None
+    return f"{path}: falta" if value is None else f"{path}: no es {_TYPE_NAMES[typ]}"
 
 
 def resolve_criteria_path(path=None) -> Path:
@@ -53,25 +73,49 @@ class Config:
 
         self.telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
         self.telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+        # canal opcional para alertas inmediatas (instant_alerts.priority: high); vacíos = el de siempre
+        self.telegram_alert_token = os.environ.get("TELEGRAM_ALERT_BOT_TOKEN", "").strip()
+        self.telegram_alert_chat_id = os.environ.get("TELEGRAM_ALERT_CHAT_ID", "").strip()
         self.claude_bin = os.environ.get("CLAUDE_BIN", "claude")
 
-        for key in ("cutoff", "deliver_by", "end"):
-            value = self.c["dates"][key]
-            if not isinstance(value, date):
-                self.c["dates"][key] = date.fromisoformat(str(value))
+        dates = self.c["dates"]
+        for key in ("cutoff", "deliver_by", "end", "decide_by"):
+            if key == "decide_by" and dates.get(key) is None:
+                continue  # opcional
+            if not isinstance(dates[key], date):
+                try:
+                    dates[key] = date.fromisoformat(str(dates[key]))
+                except ValueError:
+                    raise ValueError(f"dates.{key}: fecha inválida ({dates[key]!r}), usá AAAA-MM-DD") from None
 
     def problems(self) -> list[str]:
         """Lo que haría romper una corrida: claves faltantes o de otro tipo, regex inválidas, fuentes desconocidas."""
         out = []
-        for section, keys in _REQUIRED.items():
+        for section, keys in (_REQUIRED | {s: k for s, k in _REQUIRED_IF_PRESENT.items() if s in self.c}).items():
             values = self.c.get(section)
             if not isinstance(values, dict):
                 out.append(f"falta la sección {section}")
                 continue
-            out += [f"{section}.{key}: falta o no es {_TYPE_NAMES[typ]}"
-                    for key, typ in keys.items() if not isinstance(values.get(key), typ)]
+            out += [p for key, typ in keys.items() if (p := _type_problem(f"{section}.{key}", values.get(key), typ))]
+        for section, keys in _OPTIONAL.items():
+            values = self.c.get(section) or {}
+            if isinstance(values, dict):
+                out += [p for key, typ in keys.items()
+                        if key in values and (p := _type_problem(f"{section}.{key}", values[key], typ))]
+        floors = (self.c.get("price") or {}).get("suspicious_below") or {}
+        if isinstance(floors, dict) and not all(isinstance(v, _NUM) for v in floors.values()):
+            out.append("price.suspicious_below: cada GPU tiene que tener un precio")
+        timeout = (self.c.get("instant_alerts") or {}).get("quick_judge_timeout_minutes", 1)
+        if isinstance(timeout, _NUM) and timeout <= 0:
+            out.append("instant_alerts.quick_judge_timeout_minutes: tiene que ser mayor que 0")
+        tiers = (self.c.get("buy_now") or {}).get("cpu_tiers")
+        if isinstance(tiers, list) and set(tiers) - {"tier1", "tier2", "tier3"}:
+            out.append("buy_now.cpu_tiers: solo tier1, tier2 o tier3")
         if not isinstance(self.c.get("search_terms"), list):
             out.append("search_terms: falta o no es una lista")
+        for key in ("exclude_keywords", "flag_keywords", "watch_mpns"):
+            if not isinstance(self.c.get(key, []), list):
+                out.append(f"{key}: tiene que ser una lista")
         for i, k in enumerate(self.c.get("known_options") or []):
             missing = [f for f in ("name", "specs", "price", "where") if f not in (k or {})]
             if missing:

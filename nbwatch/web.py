@@ -53,7 +53,7 @@ def _file(path) -> dict:
 
 def _summary(c) -> dict:
     return {"id": c["id"], "price": fmt_eur(c["price_total"]), "store": c.get("store"), "gpu": c.get("gpu"),
-            "cpu": c.get("cpu"), "title": c["title"], "flags": c.get("flags") or []}
+            "cpu": c.get("cpu"), "title": c["title"], "flags": (c.get("marks") or []) + (c.get("flags") or [])}
 
 
 class App:
