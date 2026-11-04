@@ -1,18 +1,29 @@
 # Criterios de nbwatch. Editá libremente: se relee en cada corrida (no hace falta reiniciar nada).
 # Los criterios "blandos" (TGP, slim, cargador, Linux, trampas de nombres, etc.) están en texto libre en judge_prompt.md.
+# Las claves marcadas NUEVO requieren soporte en el código (ver CAMBIOS_CODIGO.md).
 
 # --- Fechas (hora de Italia) ---
 dates:
-  cutoff: 2026-10-17      # desde acá el aviso diario siempre trae la mejor opción disponible
-  deliver_by: 2026-10-31  # tiene que estar entregada en el domicilio en Italia como tarde este día
-  end: 2026-11-22         # después de esta fecha el sistema no scrapea ni juzga más
+  cutoff: 2026-11-01      # desde acá el aviso diario siempre trae la mejor opción disponible
+  deliver_by: 2026-11-20  # tiene que estar entregada en el domicilio en Italia como tarde este día (hermana viaja el 24)
+  decide_by: 2026-11-12   # NUEVO: desde acá el aviso diario pasa a "decidí hoy": mejor opción disponible + plan C
+  end: 2026-11-19         # después de esta fecha el sistema no scrapea ni juzga más (lo comprado después no llega)
 
 # --- Precio (TOTAL con envío, en EUR) ---
 price:
   target: 1500            # tope "normal"; por encima, el juez lo marca como "sobre el tope"
   hard_cap: 1650          # por encima de esto ni siquiera llega al juez
   hard_cap_high_vram: 1900  # tope duro para GPUs con más de 8 GB de VRAM (ver gpus.high_vram)
-  min_sane: 700           # por debajo: precio sospechoso (accesorio, error, estafa) -> descartado
+  min_sane: 700           # por debajo: precio sospechoso (accesorio, error, estafa)
+  suspicious_action: flag # NUEVO: flag = sigue adelante marcado "⚠️ sospechoso"; discard = se descarta (comportamiento anterior)
+  # NUEVO: precio sospechoso según la GPU (orientativo, ajustable). Por debajo de esto -> mismo tratamiento que min_sane.
+  # Ej.: la Alienware con 5080 a 1312 € habría llegado marcada; la Helios con 5070 Ti a 1600 €, no.
+  suspicious_below:
+    "5070 Ti": 1250
+    "4080": 1400
+    "5080": 1700
+    "4090": 1800
+    "5090": 2400
 
 # --- GPU ---
 # Se detectan en título/specs; gana el modelo más específico ("5070 Ti" antes que "5070").
@@ -59,6 +70,10 @@ cpus:
 exclude_keywords: ["ricondizionato", "ricondizionati", "refurbished", "rigenerato", "usato",
                    "seconda mano", "open box", "grado a", "grade a", "reacondicionado"]
 
+# NUEVO: palabras que NO descartan pero marcan el listado (título, specs y etiquetas/badges de la tienda).
+# Ej.: el badge "OUTLET ONLINE" de Unieuro puede ser stock nuevo, exhibido o devuelto: hay que mirar la ficha.
+flag_keywords: ["outlet", "esposto", "imballo aperto", "imballo danneggiato", "reso", "fine serie"]
+
 # --- Tiendas ---
 stores:
   # Tiendas grandes / confiables (comparación por subcadena, sin distinguir mayúsculas).
@@ -100,26 +115,53 @@ known_options:
     mpn: D93TKEA
     where: "Amazon.it"
     price: 1199.99
-    specs: "Ryzen 9 8940HX, RTX 5060, 16 GB (probable 2x8), 512 GB, 16\" 1920x1200 144 Hz ~300 nits, FreeDOS, SIN cargador"
-    note: "Opción de respaldo disponible."
+    specs: "Ryzen 9 8940HX, RTX 5060, 16 GB (probable 2x8), 512 GB, 16\" 1920x1200 144 Hz ~300 nits, FreeDOS, SIN cargador, 2 slots M.2 (2280 + 2230)"
+    note: "Opción preferida si vuelve a tener stock (armada con cargador + SSD 2230 ≈ 1390 €)."
   - name: "HP OMEN 16-ap0013nl"
     where: "Unieuro"
     price: 1499
     specs: "Ryzen 9 8940HX, RTX 5070, 32 GB, 1 TB, 16\" 1920x1200 (\"2K\"), Windows 11 Home"
     note: "Agotada; avisar si vuelve."
+  - name: "Acer Predator Helios Neo 16S AI PHN16S-71-96M5"
+    mpn: PHN16S-71-96M5
+    where: "Unieuro (Outlet Online)"
+    price: 1600
+    specs: "Core Ultra 9 275HX, RTX 5070 Ti 12 GB (~115 W), 32 GB (2x16), 2 TB, 2 slots M.2, 16\" 2560x1600 240 Hz, Windows 11 Home"
+    note: "La mejor opción vista; se agotó en menos de 1 hora. Si vuelve a ~1600 €: COMPRAR YA."
+  - name: "MSI Katana 15 HX B14WGK-034IT"
+    where: "(sin especificar)"
+    price: 1489
+    specs: "i7-14650HX, RTX 5070 8 GB (115 W), 16 GB (2x8), 1 TB, UN SOLO slot M.2, 15,6\" 1920x1080 144 Hz IPS-Level, Windows 11 Home"
+    note: "Plan C: comprar si para decide_by no apareció nada mejor."
 
 # MPNs que además se buscan explícitamente en cada fuente.
-watch_mpns: ["D73SXEA", "C9SE3EA", "D93TKEA"]
+watch_mpns: ["D73SXEA", "C9SE3EA", "D93TKEA", "PHN16S-71-96M5"]
 
 # Términos de búsqueda generales (cada fuente les agrega lo suyo, p. ej. "laptop"/"notebook").
 search_terms: ["rtx 5060", "rtx 5070", "rtx 5070 ti", "rtx 5080",
                "rtx 5050", "rtx 4060", "rtx 4070",   # GPUs de respaldo
-               "16-ap0013nl"]                        # modelo agotado a vigilar
+               "16-ap0013nl",                        # modelo agotado a vigilar
+               "helios neo 16s"]
 
 # --- Alertas inmediatas (durante el scrape, sin juez) ---
 instant_alerts:
   # GPU con más de 8 GB de VRAM, disponible, que pasa los filtros y cuesta como mucho esto.
   high_vram_max_price: 1750
+  priority: high                  # NUEVO: notificación con sonido/prioridad alta, separada del resumen diario
+  quick_judge: true               # NUEVO: tras cada alerta, el juez revisa solo ese producto y responde "🔎 Veredicto rápido"
+  quick_judge_timeout_minutes: 8  # NUEVO
+
+# NUEVO: regla de compra inmediata. Si TODO se cumple, la alerta sale como "🟢 COMPRAR YA"
+# (comprar primero y verificar después: hay 14 días de desistimiento en compras online en la UE).
+# Si falta algún dato (RAM, almacenamiento, entrega, vendedor), sale como alerta normal.
+buy_now:
+  gpus: ["5070 Ti", "5080", "5090", "4080", "4090"]   # 12 GB de VRAM o más
+  cpu_tiers: [tier1, tier2]
+  min_ram_gb: 32
+  min_storage_gb: 1000
+  max_price: 1700
+  trusted_store_only: true  # vendido Y enviado por una tienda de stores.trusted (sin marketplace)
+  must_deliver_by: true     # entrega estimada <= dates.deliver_by
 
 # --- Fuentes ---
 sources:
