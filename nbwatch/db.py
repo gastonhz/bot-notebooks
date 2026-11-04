@@ -123,6 +123,10 @@ class DB:
         self.conn.execute("INSERT OR REPLACE INTO sent_alerts VALUES (?,?,?,?)", (kind, ref, price, now_utc()))
         self.conn.commit()
 
+    def forget_alerts(self, ref):
+        self.conn.execute("DELETE FROM sent_alerts WHERE ref=?", (ref,))
+        self.conn.commit()
+
     # --- juicios ---
     def save_judgment(self, mode, notified, output, picks):
         self.conn.execute(

@@ -20,7 +20,7 @@ cada ~4 h   nbwatch scrape ──► fuentes ──► SQLite (historial de prec
 |---|---|---|
 | **Trovaprezzi** | Chromium visible bajo Xvfb (DataDome bloquea headless y HTTP) | Comparador principal: Amazon.it, MediaWorld, Unieuro, Euronics y tiendas chicas, con envío, rating y medios de pago de cada tienda |
 | **Idealo** | Chromium (JSON embebido en la página) | Segundo comparador: oferta más barata por producto |
-| **Unieuro** | HTTP al índice Algolia de su buscador | MPN exacto, stock y fechas de entrega |
+| **Unieuro** | HTTP al índice Algolia de su buscador; el stock de lo que importa se verifica en la ficha | MPN exacto, stock y fechas de entrega |
 | **HP Store IT** | HTTP | Ficha HP oficial (MPN, cupones, "cargador no incluido") |
 
 Amazon, MediaWorld y Euronics bloquean el acceso directo (Amazon a propósito, los otros dos con
@@ -184,6 +184,7 @@ Mensajes que pueden llegar:
 | 🚨 ¡apareció la referencia! | D73SXEA disponible en cualquier tienda a ≤ `instant_alert_max_price` |
 | 🟢 COMPRAR YA — RTX … | Algo cumple todas las condiciones de `buy_now` |
 | 🚀 RTX 5070 Ti/5080 a … | GPU con >8 GB de VRAM a ≤ `instant_alerts.high_vram_max_price` |
+| | Cada alerta sale una vez por oferta, y otra vez si baja el precio o si se agota y vuelve |
 | 🔎 Veredicto rápido | Respuesta a una alerta inmediata, con la revisión de ese producto |
 | ⚠️ la fuente X falló | N corridas seguidas con bloqueo, 0 resultados o error |
 | 💥 nbwatch … falló | La corrida entera rompió (máximo 1 aviso cada 12 h por el mismo error) |
@@ -198,6 +199,9 @@ Mensajes que pueden llegar:
   en `nbwatch/sources/<fuente>.py`, con una función `parse_page`.
 - **Unieuro 403**: rotaron la clave pública de Algolia. El docstring de `sources/unieuro.py` explica
   cómo sacar la nueva.
+- **Unieuro "no pude leer el stock en ninguna ficha"**: el índice de Algolia se actualiza con retraso,
+  así que el stock de lo que pasa el prefiltro se lee de la ficha (`STOCK_RE` en `sources/unieuro.py`).
+  Si cambió la página, mientras tanto quedan los datos de Algolia, marcados "stock sin verificar".
 - **Juez**: si `claude -p` falla (token vencido, límite de uso), llega el aviso 💥. Para revisarlo,
   corré `nbwatch judge --dry-run`.
 

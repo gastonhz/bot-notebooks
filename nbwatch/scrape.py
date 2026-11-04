@@ -8,13 +8,6 @@ from .sources import SourceBlocked, SourceContext, SourceError, get_sources
 from .util import fmt_eur, log, now_utc, squash, today_rome
 
 
-def listing_row(l) -> dict:
-    """Listing -> dict con las mismas claves que una fila de la DB (para evaluate())."""
-    return {"title": l.title, "price": l.price, "available": l.available, "store": l.store,
-            "source": l.source, "extra": l.extra, "mpn": l.mpn, "url": l.url, "key": l.key,
-            "base_price": l.base_price, "shipping": l.shipping}
-
-
 def safe_send(cfg, text, alert=False):
     try:
         return notify.send(cfg, text, alert=alert)
@@ -68,6 +61,8 @@ def check_instant_alerts(cfg, db, since_ts):
     high_vram = [g.lower() for g in cfg["gpus"]["high_vram"]]
     vram_cap = cfg.get("instant_alerts", {}).get("high_vram_max_price")
     for row in db.listings_since(since_ts):
+        if row["available"] == 0:
+            db.forget_alerts(row["key"])  # si vuelve a estar disponible, avisa de nuevo aunque sea al mismo precio
         v = evaluate(row, cfg)
         bn = check_buy_now(row, v, cfg) if v.passed else None
         haystack = f"{row['title']} {row['mpn'] or ''} {row['url'] or ''}".lower()
@@ -88,7 +83,7 @@ def print_dry_run(cfg, name, listings):
     rejected = collections.Counter()
     passed = []
     for l in listings:
-        v = evaluate(listing_row(l), cfg)
+        v = evaluate(l.as_row(), cfg)
         if v.passed:
             passed.append((l, v))
         else:
@@ -96,7 +91,7 @@ def print_dry_run(cfg, name, listings):
     print(f"\n=== {name}: {len(listings)} listados, {len(passed)} pasan el prefiltro")
     for l, v in sorted(passed, key=lambda x: x[0].price or 0):
         cpu = f"{v.cpu} ({v.cpu_tier[-1]})" if v.cpu else "?"
-        marks = all_marks(v, check_buy_now(listing_row(l), v, cfg))
+        marks = all_marks(v, check_buy_now(l.as_row(), v, cfg))
         print(f"  ✔ {fmt_eur(l.price):>12} | {squash(l.store, 18):18} | {v.gpu:7} | {squash(cpu, 16):16} | {squash(l.title, 80)}"
               + (f"  {' · '.join(marks)}" if marks else "") + (f"  [{', '.join(v.flags)}]" if v.flags else ""))
     for reason, n in rejected.most_common(8):

@@ -253,6 +253,8 @@ def evaluate(row, cfg) -> Verdict:
 
     if row["source"] == "idealo":
         v.flags.append("precio de idealo (oferta más barata; verificar tienda)")
+    if extra.get("stock_unverified"):
+        v.flags.append("stock sin verificar en la ficha (el índice de Unieuro puede estar desactualizado)")
     if extra.get("charger_separate"):
         v.flags.append("cargador vendido por separado")
     if "slim" in low or extra.get("slim"):

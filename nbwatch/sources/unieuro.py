@@ -3,12 +3,16 @@
 La clave es la "search-only" pública que el sitio entrega a cualquier navegador. Si la rotan,
 la fuente empieza a fallar con 403 y llega el aviso de salud: hay que tomar la nueva de las
 peticiones a *.algolia.net que hace https://www.unieuro.it/online/products?q=rtx (DevTools).
+
+El stock del índice se actualiza con retraso (puede decir inStock cuando la ficha ya dice "Non
+disponibile"), así que lo que importa se verifica en la ficha: ver verify_stock.
 """
 import re
 
 from curl_cffi import requests
 
 from ..models import Listing
+from ..prefilter import evaluate
 from ..util import log, parse_eur, polite_sleep, squash
 from . import SourceBlocked, SourceError
 
@@ -17,6 +21,8 @@ APP_ID = "MNBCENYFII"
 API_KEY = "977ed8d06b718d4929ca789c78c4107a"
 INDEX = "sgmproducts_prod"
 BASE = "https://www.unieuro.it/online"
+# en el JSON que la ficha trae embebido: "stock":{"stockLevel":0,"stockLevelStatus":"outOfStock",...}
+STOCK_RE = re.compile(r'"stockLevelStatus"\s*:\s*"(\w+)"')
 
 
 def _is_notebook(hit):
@@ -102,4 +108,41 @@ def fetch(ctx) -> list[Listing]:
             found.setdefault(it.key, it)
     if general == 0:
         raise SourceError("0 resultados en las búsquedas generales", list(found.values()))
+    verify_stock(session, ctx, list(found.values()))
     return list(found.values())
+
+
+def page_stock(session, url) -> str | None:
+    """stockLevelStatus de la ficha (inStock / lowStock / outOfStock), o None si no se pudo leer."""
+    try:
+        r = session.get(url, timeout=40, headers={"Accept-Language": "it-IT,it;q=0.9"})
+    except Exception as e:
+        log.warning("unieuro: no pude abrir %s: %s", url, e)
+        return None
+    m = STOCK_RE.search(r.text) if r.status_code == 200 else None
+    return m.group(1) if m else None
+
+
+def verify_stock(session, ctx, listings):
+    """Corrige con la ficha lo que Algolia da como disponible y pasa el prefiltro o es un MPN vigilado
+    (las alertas de la referencia no dependen del prefiltro). El resto no hace falta: no llega a nada."""
+    mpns = [q.lower() for q, is_mpn in ctx.queries() if is_mpn]
+    todo = [l for l in listings if l.available and (
+        any(m in f"{l.title} {l.mpn or ''} {l.url}".lower() for m in mpns) or evaluate(l.as_row(), ctx.cfg).passed)]
+    gone = unknown = 0
+    for l in todo:
+        polite_sleep(2, 5)
+        status = page_stock(session, l.url)
+        if status is None:
+            unknown += 1
+            l.extra["stock_unverified"] = True
+            continue
+        l.extra["stock"] = status
+        if status == "outOfStock":
+            l.available = False
+            gone += 1
+    log.info("unieuro: stock verificado en %d fichas: %d agotadas aunque Algolia las daba disponibles, "
+             "%d sin verificar", len(todo), gone, unknown)
+    if todo and unknown == len(todo):
+        raise SourceError("no pude leer el stock en ninguna ficha (¿cambió la página?); quedan los datos de Algolia",
+                          listings)

@@ -18,3 +18,9 @@ class Listing:
     @property
     def key(self) -> str:
         return f"{self.source}:{self.offer_id}"
+
+    def as_row(self) -> dict:
+        """Las mismas claves que una fila de la DB (para evaluate() antes de guardar)."""
+        return {"title": self.title, "price": self.price, "available": self.available, "store": self.store,
+                "source": self.source, "extra": self.extra, "mpn": self.mpn, "url": self.url, "key": self.key,
+                "base_price": self.base_price, "shipping": self.shipping}
