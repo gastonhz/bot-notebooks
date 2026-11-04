@@ -44,8 +44,34 @@ esquema. Los links y precios del mensaje salen de la base, no del modelo.
 
 - `criteria.yaml`: tope de precio, fechas, GPUs, tiendas, búsquedas, referencias. Se relee en cada corrida.
 - `judge_prompt.md`: criterios blandos en texto libre para el juez (TGP, slim, Linux, trampas de nombres).
-- `nbwatch/`: el código. `sources/` tiene un módulo por fuente.
+- `nbwatch/`: el código. `sources/` tiene un módulo por fuente; `web.py` y `web.html`, la interfaz web.
 - `deploy/`: `install.sh`, units de systemd, el atajo `nbwatch` y el ejemplo de `/etc/nbwatch.env`.
+
+En el LXC, `criteria.yaml` y `judge_prompt.md` viven en `/var/lib/nbwatch/` (los del repo son la
+versión inicial), para que la interfaz web los pueda escribir.
+
+## Interfaz web
+
+`http://<ip-del-lxc>:8080`, con el usuario y la clave de `NBWATCH_WEB_USER` / `NBWATCH_WEB_PASSWORD`
+en `/etc/nbwatch.env`. Sirve para:
+
+- **Editar** los dos archivos. Al guardar valida: el YAML, las claves que el código necesita, las
+  regex de CPU y los nombres de fuentes. Si algo está mal no guarda, así una edición rota no
+  hace fallar la próxima corrida.
+- **Vista previa**: con el borrador muestra qué candidatos entrarían y cuáles saldrían frente a lo
+  guardado (y por qué salen), más el prompt exacto que recibiría el juez. Usa lo que ya está en la
+  base: no scrapea ni llama a claude.
+- **Correr ahora**: un scrape, el juez de prueba (`judge --dry-run`: llama a claude y muestra el mensaje
+  sin mandarlo) o el diario completo. Las corridas usan lo guardado, toman el mismo lock que los
+  timers y su salida queda en `/var/lib/nbwatch/web-run.log`.
+
+No hace falta reiniciar nada al guardar: cada corrida relee los archivos. Cada guardado deja la
+versión anterior en `/var/lib/nbwatch/backups/` (se conservan las últimas 30 de cada archivo).
+Va por HTTP plano, así que conviene usarla solo dentro de la LAN. Si reiniciás `nbwatch-web`, se
+corta la corrida manual que esté en curso.
+
+Para probarla fuera del LXC: `NBWATCH_WEB_USER=yo NBWATCH_WEB_PASSWORD=algo venv/bin/python -m nbwatch web`
+(escucha en `127.0.0.1:8080`; `--host 0.0.0.0` para abrirla a la red).
 
 ## Deploy en el LXC de Proxmox
 
@@ -61,7 +87,9 @@ esquema. Los links y precios del mensaje salen de la base, no del modelo.
    Instala python, venv, Xvfb, Chromium de Playwright con sus librerías, Claude Code para el
    usuario `nbwatch`, el atajo `/usr/local/bin/nbwatch` y los units de systemd.
    Para actualizar el código más adelante: `cd /root/nbwatch-src && git pull && bash deploy/install.sh`.
-   No pisa `/opt/nbwatch/criteria.yaml` ni `judge_prompt.md` si los editaste ahí.
+   No pisa `/var/lib/nbwatch/criteria.yaml` ni `judge_prompt.md` si los editaste (la versión del repo
+   queda al lado como `.new`). Si venís de una instalación donde estaban en `/opt/nbwatch`, los mueve
+   y agrega las variables nuevas a `/etc/nbwatch.env`.
 
 3. **Bot de Telegram**: en Telegram, hablale a @BotFather → `/newbot` → copiá el token a
    `TELEGRAM_BOT_TOKEN` en `/etc/nbwatch.env`. Mandale cualquier mensaje a tu bot y corré:
@@ -75,9 +103,12 @@ esquema. Los links y precios del mensaje salen de la base, no del modelo.
    ```
    Pegá el token en `CLAUDE_CODE_OAUTH_TOKEN` en `/etc/nbwatch.env`.
 
-5. **Probar** (ver la sección siguiente) y **activar los timers**:
+5. **Interfaz web**: poné un usuario y una clave en `NBWATCH_WEB_USER` y `NBWATCH_WEB_PASSWORD`
+   en `/etc/nbwatch.env`.
+
+6. **Probar** (ver la sección siguiente) y **activar los timers y la web**:
    ```bash
-   systemctl enable --now nbwatch-scrape.timer nbwatch-daily.timer
+   systemctl enable --now nbwatch-scrape.timer nbwatch-daily.timer nbwatch-web.service
    systemctl list-timers 'nbwatch*'
    ```
 
@@ -110,12 +141,12 @@ venv/bin/python -m nbwatch scrape --dry-run    # usa ./state y abre ventanas de 
 
 ## Operación
 
-- Logs: `journalctl -u nbwatch-scrape -u nbwatch-daily -e`
+- Logs: `journalctl -u nbwatch-scrape -u nbwatch-daily -u nbwatch-web -e`
 - Estado: `nbwatch status`
 - La base es `/var/lib/nbwatch/nbwatch.sqlite3`. Se puede consultar con `sqlite3`, por ejemplo
   `select title, store, price, last_seen from listings order by last_seen desc limit 20;`
-- Para cambiar el tope, las fechas o las tiendas, editá `/opt/nbwatch/criteria.yaml`; para los
-  criterios del juez, `/opt/nbwatch/judge_prompt.md`. Los cambios rigen desde la próxima corrida.
+- Para cambiar el tope, las fechas, las tiendas o los criterios del juez, usá la interfaz web (o editá
+  `/var/lib/nbwatch/criteria.yaml` y `judge_prompt.md`). Los cambios rigen desde la próxima corrida.
 
 Mensajes que pueden llegar:
 
@@ -146,5 +177,5 @@ Mensajes que pueden llegar:
 En la fecha de fin (`dates.end`) el sistema deja de scrapear y juzgar, y avisa una vez. Para apagarlo del todo:
 
 ```bash
-systemctl disable --now nbwatch-scrape.timer nbwatch-daily.timer
+systemctl disable --now nbwatch-scrape.timer nbwatch-daily.timer nbwatch-web.service
 ```

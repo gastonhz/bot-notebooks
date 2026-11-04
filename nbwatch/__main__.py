@@ -10,6 +10,7 @@ from .judge import _iso_hours_ago, collect_candidates, run_judge
 from .notify import esc, telegram_call
 from .scrape import run_scrape
 from .util import file_lock, fmt_eur, log, now_utc, squash
+from .web import serve
 
 
 def cmd_scrape(cfg, db, args):
@@ -127,11 +128,19 @@ def main(argv=None):
     sub.add_parser("telegram-chat-id", help="muestra el chat_id de quien le escribió al bot").set_defaults(
         func=cmd_telegram_chat_id, locked=False)
 
+    p = sub.add_parser("web", help="interfaz web: editar criterios y prompt del juez, correr a mano")
+    p.add_argument("--host", default="127.0.0.1", help="dirección donde escuchar (0.0.0.0 = todas)")
+    p.add_argument("--port", type=int, default=8080)
+
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
     for noisy in ("asyncio", "urllib3"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    if args.command == "web":
+        # sin Config: la interfaz tiene que arrancar aunque criteria.yaml esté roto, justamente para arreglarlo
+        return serve(args.criteria, args.host, args.port)
 
     cfg = Config(args.criteria)
     db = DB(cfg.db_path)

@@ -105,7 +105,14 @@ def notified_history(db, days=10):
     return out
 
 
-def build_prompt(cfg, cands, mode, history):
+def current_mode(cfg):
+    return "post" if today_rome() >= cfg.dates["cutoff"] else "pre"
+
+
+def build_prompt(cfg, cands, mode, history, instructions=None):
+    """instructions: texto a usar en vez de judge_prompt.md (los borradores de la interfaz web)."""
+    if instructions is None:
+        instructions = cfg.judge_prompt_path.read_text(encoding="utf-8")
     d, pc, ref, pb = cfg.dates, cfg["price"], cfg["reference"], cfg["plan_b"]
     today = today_rome()
     days_left = (d["deliver_by"] - today).days
@@ -133,7 +140,7 @@ def build_prompt(cfg, cands, mode, history):
         for k in cfg.get("known_options") or []
     ) or "- (ninguna)"
     cand_json = "[\n" + ",\n".join(json.dumps(c, ensure_ascii=False) for c in cands) + "\n]"
-    return f"""{cfg.judge_prompt_path.read_text(encoding='utf-8')}
+    return f"""{instructions}
 
 # Datos de hoy
 
@@ -278,7 +285,7 @@ def run_judge(cfg, db, dry_run=False, print_prompt=False, force_notify=False, mo
             db.kv_set("end_notice", "1")
         log.info("pasó la fecha de fin (%s): no se juzga más", cfg.dates["end"])
         return
-    mode = mode or ("post" if today >= cfg.dates["cutoff"] else "pre")
+    mode = mode or current_mode(cfg)
     cands = collect_candidates(cfg, db)
     prompt = build_prompt(cfg, cands, mode, notified_history(db))
     if print_prompt:

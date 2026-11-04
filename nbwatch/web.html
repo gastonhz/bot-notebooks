@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nbwatch</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #fff; --text: #1d2329; --muted: #67717b; --border: #d8dde2;
+    --accent: #2563eb; --ok: #15803d; --warn: #b45309; --err: #b91c1c; --add: #e6f5eb; --del: #fbe9e9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131619; --panel: #1b1f23; --text: #e2e5e8; --muted: #8b949e; --border: #2f363d;
+      --accent: #5b9cf6; --ok: #4ade80; --warn: #fbbf24; --err: #f87171; --add: #15301f; --del: #3a1b1b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; flex-wrap: wrap; gap: .25rem 1rem; align-items: baseline; padding: .7rem 1rem;
+           background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0; font-size: 1.05rem; }
+  header span { color: var(--muted); }
+  main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 1rem; padding: 1rem; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+  .col { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: .75rem; min-width: 0; }
+  h2 { margin: 0 0 .5rem; font-size: .95rem; }
+  .tabs { display: flex; gap: .25rem; margin-bottom: .5rem; }
+  .tabs button[aria-selected="true"] { border-color: var(--accent); color: var(--accent); }
+  .tabs button.dirty::after { content: " •"; color: var(--warn); }
+  textarea { display: block; width: 100%; height: calc(100vh - 12.5rem); min-height: 22rem; resize: vertical;
+             padding: .5rem; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2;
+             color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+  .bar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .5rem; }
+  button { font: inherit; padding: .35rem .8rem; border-radius: 6px; border: 1px solid var(--border);
+           background: var(--panel); color: var(--text); cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .small { color: var(--muted); font-size: 12px; }
+  .msg { margin: 0 0 .4rem; padding: .35rem .6rem; border-left: 3px solid; border-radius: 4px; background: var(--bg); }
+  .msg.err { border-color: var(--err); } .msg.warn { border-color: var(--warn); } .msg.ok { border-color: var(--ok); }
+  .table { max-height: 26rem; overflow: auto; margin-top: .4rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  td { padding: .3rem .35rem; border-top: 1px solid var(--border); vertical-align: top; }
+  td.p { white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+  tr.add { background: var(--add); } tr.del { background: var(--del); } tr.del .t { text-decoration: line-through; }
+  details { margin-top: .6rem; } summary { cursor: pointer; }
+  pre { margin: .4rem 0 0; padding: .5rem; max-height: 24rem; overflow: auto; white-space: pre-wrap; word-break: break-word;
+        font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg); border-radius: 6px; }
+  #log:empty { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>nbwatch</h1>
+  <span>criterios y prompt del juez · los cambios rigen desde la próxima corrida</span>
+</header>
+<main>
+  <section>
+    <div class="tabs" role="tablist">
+      <button role="tab" data-file="criteria" aria-selected="true">criteria.yaml</button>
+      <button role="tab" data-file="prompt" aria-selected="false">judge_prompt.md</button>
+    </div>
+    <textarea id="editor" spellcheck="false" aria-label="contenido del archivo"></textarea>
+    <div class="bar">
+      <button class="primary" id="save" title="Ctrl+S">Guardar</button>
+      <button id="preview">Vista previa</button>
+      <button id="revert">Descartar cambios</button>
+      <span class="small" id="path"></span>
+    </div>
+  </section>
+  <div class="col">
+    <section>
+      <h2>Vista previa</h2>
+      <div id="result" class="small">Cargando…</div>
+    </section>
+    <section>
+      <h2>Correr ahora</h2>
+      <div class="bar" style="margin-top: 0">
+        <button data-run="scrape" title="Recorre las fuentes y guarda; puede mandar alertas inmediatas">Scrape</button>
+        <button data-run="judge" title="Llama a claude con lo que hay en la base y muestra el mensaje acá, sin mandarlo">Juez de prueba</button>
+        <button data-run="daily" title="Scrape + juez + aviso a Telegram, como el timer de las 09:00">Diario completo</button>
+      </div>
+      <p class="small" id="runstate">Usan los criterios guardados, no el borrador.</p>
+      <pre id="log"></pre>
+    </section>
+  </div>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const editor = $("#editor");
+const files = { criteria: {}, prompt: {} };  // text: borrador, saved: lo que hay en disco
+let current = "criteria";
+let pollTimer;
+
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const when = (iso) => (iso ? new Date(iso).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" }) : "nunca");
+const dirty = (f) => files[f].text !== files[f].saved;
+
+async function api(path, body) {
+  const opts = body === undefined ? {} :
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({ errors: [`HTTP ${r.status}`] }));
+  return { ok: r.ok, data };
+}
+
+function sync() {
+  files[current].text = editor.value;
+  editor.setAttribute("wrap", current === "criteria" ? "off" : "soft");  // en YAML, cortar líneas confunde la indentación
+  for (const b of document.querySelectorAll("[data-file]")) {
+    b.setAttribute("aria-selected", b.dataset.file === current);
+    b.classList.toggle("dirty", dirty(b.dataset.file));
+  }
+  $("#path").textContent = files[current].path;
+}
+
+function draft() {
+  sync();
+  return { criteria: files.criteria.text, prompt: files.prompt.text,
+           criteria_hash: files.criteria.hash, prompt_hash: files.prompt.hash };
+}
+
+function row(c, cls, extra) {
+  const info = [c.gpu && `RTX ${c.gpu}`, c.cpu, ...c.flags].filter(Boolean).map(esc).join(" · ");
+  return `<tr class="${cls}"><td class="p">${esc(c.price)}</td><td>${esc(c.store)}</td>` +
+         `<td><span class="t">${esc(c.title)}</span><div class="small">${info}${extra || ""}</div></td></tr>`;
+}
+
+function render(d, okMsg) {
+  let h = okMsg ? `<p class="msg ok">${esc(okMsg)}</p>` : "";
+  h += (d.errors || []).map((e) => `<p class="msg err">${esc(e)}</p>`).join("");
+  h += (d.warnings || []).map((w) => `<p class="msg warn">${esc(w)}</p>`).join("");
+  if (d.candidates) {
+    const n = d.candidates.length, changed = d.removed.length || d.candidates.some((c) => c.added);
+    h += `<p>Candidatos para el juez: <b>${n}</b>${changed ? ` (con lo guardado: ${d.saved_count})` : ""}</p>`;
+    h += `<p class="small">${d.recent} listados vistos en las últimas ${d.lookback_hours} h · ` +
+         `último scrape: ${esc(when(d.last_scrape))} · modo ${d.mode === "post" ? "post-corte" : "pre-corte"}</p>`;
+    if (n || d.removed.length) {
+      h += `<div class="table"><table>` + d.candidates.map((c) => row(c, c.added ? "add" : "")).join("") +
+           d.removed.map((c) => row(c, "del", ` · <b>sale: ${esc(c.why)}</b>`)).join("") + `</table></div>`;
+    }
+    h += `<details><summary>Prompt completo que recibiría el juez (${d.prompt.length.toLocaleString("es-AR")} caracteres)</summary>` +
+         `<pre>${esc(d.prompt)}</pre></details>`;
+  }
+  $("#result").className = "";
+  $("#result").innerHTML = h;
+}
+
+async function preview() {
+  const { data } = await api("/api/preview", draft());
+  render(data);
+}
+
+async function save() {
+  const { ok, data } = await api("/api/save", draft());
+  if (ok) {
+    for (const f of ["criteria", "prompt"]) { files[f].saved = files[f].text; files[f].hash = data.hashes[f]; }
+  }
+  render(data, ok && (data.saved.length ? `Guardado: ${data.saved.join(", ")}.` : "No había cambios para guardar."));
+  sync();
+}
+
+function renderRun(r) {
+  const labels = { scrape: "Scrape", judge: "Juez de prueba", daily: "Diario completo" };
+  for (const b of document.querySelectorAll("[data-run]")) b.disabled = r.running;
+  let state = "Usan los criterios guardados, no el borrador.";
+  if (r.running) state = `${labels[r.kind]}: corriendo desde ${when(r.started)}…`;
+  else if (r.kind) state = `${labels[r.kind]} (${when(r.started)}): ` +
+    (r.exit === 0 ? "terminó bien." : `falló (código ${r.exit}).`);
+  $("#runstate").textContent = state;
+  const log = $("#log"), atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  log.textContent = r.log;
+  if (atBottom) log.scrollTop = log.scrollHeight;
+  clearTimeout(pollTimer);
+  if (r.running) pollTimer = setTimeout(async () => renderRun((await api("/api/run")).data), 3000);
+}
+
+async function run(kind) {
+  if (kind === "daily" && !confirm("El diario completo puede mandar el aviso a Telegram. ¿Lo corro?")) return;
+  const { ok, data } = await api("/api/run", { kind });
+  if (ok) renderRun(data); else alert(data.errors.join("\n"));
+}
+
+async function load() {
+  const { data } = await api("/api/state");
+  for (const f of ["criteria", "prompt"]) files[f] = { ...data[f], saved: data[f].text };
+  editor.value = files[current].text;
+  sync();
+  renderRun(data.run);
+  preview();
+}
+
+for (const b of document.querySelectorAll("[data-file]")) {
+  b.addEventListener("click", () => { sync(); current = b.dataset.file; editor.value = files[current].text; sync(); });
+}
+for (const b of document.querySelectorAll("[data-run]")) b.addEventListener("click", () => run(b.dataset.run));
+$("#save").addEventListener("click", save);
+$("#preview").addEventListener("click", preview);
+$("#revert").addEventListener("click", () => {
+  if (!confirm("¿Descartar los cambios sin guardar de los dos archivos?")) return;
+  for (const f of ["criteria", "prompt"]) files[f].text = files[f].saved;
+  editor.value = files[current].text;
+  sync();
+  preview();
+});
+editor.addEventListener("input", sync);
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(); }
+});
+window.addEventListener("beforeunload", (e) => { sync(); if (dirty("criteria") || dirty("prompt")) e.preventDefault(); });
+load();
+</script>
+</body>
+</html>
