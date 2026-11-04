@@ -5,7 +5,7 @@
 dates:
   cutoff: 2026-10-17      # desde acá el aviso diario siempre trae la mejor opción disponible
   deliver_by: 2026-10-31  # tiene que estar entregada en el domicilio en Italia como tarde este día
-  end: 2026-10-31         # después de esta fecha el sistema no scrapea ni juzga más
+  end: 2026-11-22         # después de esta fecha el sistema no scrapea ni juzga más
 
 # --- Precio (TOTAL con envío, en EUR) ---
 price:
