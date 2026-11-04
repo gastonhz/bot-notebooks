@@ -48,8 +48,9 @@ tienda chica.
   Además, dispara la alerta inmediata por sí sola.
 
 **Veredicto rápido** (`instant_alerts.quick_judge`): después de cada alerta inmediata, `claude -p`
-revisa solo ese producto en segundo plano: vendedor y envío reales, reseñas recientes, coherencia de
-la ficha, precio y marcas. La respuesta llega como reply a la alerta. Hay uno solo por producto,
+revisa solo ese producto en segundo plano, con `judge_prompt.md` (su sección "Modo veredicto rápido")
+y los mismos datos que el juez diario, y responde comprar, considerar o evitar. La respuesta llega
+como reply a la alerta. Hay uno solo por producto,
 tienda y precio. Si falla o pasa `quick_judge_timeout_minutes`, llega un aviso corto y no se reintenta.
 
 **Juez**: recibe los candidatos (deduplicados, con historial de precio, señales del prefiltro, marcas

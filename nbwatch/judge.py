@@ -60,44 +60,48 @@ def collect_candidates(cfg, db):
         v = evaluate(row, cfg)
         if not v.passed:
             continue
-        bn = check_buy_now(row, v, cfg)
-        extra = row_extra(row)
-        mpns = [row["mpn"]] if row["mpn"] else extract_mpns(f"{row['title']} {spec_text(row)}")
-        cand = {
-            "id": row["id"],
-            "title": row["title"],
-            "mpn": mpns[0] if mpns else None,
-            "gpu": v.gpu,
-            "cpu": f"{v.cpu} (nivel {v.cpu_tier[-1]})" if v.cpu else None,
-            "store": row["store"],
-            "store_type": "chica" if v.small_store else "grande",
-            "store_rating": extra.get("store_rating"),
-            "store_reviews": extra.get("store_reviews"),
-            "review_service": extra.get("review_service"),
-            "payments": extra.get("payments") or None,
-            "price_total": row["price"],
-            "base_price": row["base_price"] if row["base_price"] != row["price"] else None,
-            "shipping": row["shipping"],
-            "availability": extra.get("availability") or extra.get("stock"),
-            "delivery": extra.get("delivery"),
-            "coupon": extra.get("coupon"),
-            "specs": extra.get("specs") or extra.get("desc") or None,
-            "flags": v.flags or None,
-            "marks": all_marks(v, bn) or None,
-            "buy_now": True if bn and bn.ok else None,
-            "buy_now_failed": bn.failed + [f"falta {m}" for m in bn.missing] if bn and not bn.ok else None,
-            "source": row["source"],
-            "first_seen": row["first_seen"][:10],
-            "new_since_last_judgment": last_ts is None or row["first_seen"] > last_ts,
-            "prev_price": row["prev_price"],
-            "min_price_seen": row["min_price"] if row["min_price"] != row["price"] else None,
-        }
-        cand = {k: val for k, val in cand.items() if val not in (None, [], {}, "")}
+        cand = candidate(row, v, check_buy_now(row, v, cfg), last_ts)
         group = product_key(row)
         if group not in best or row["price"] < best[group]["price_total"]:
             best[group] = cand
     cands = sorted(best.values(), key=lambda c: c["price_total"])
     return cands[: cfg["judge"].get("max_candidates", 120)]
+
+
+def candidate(row, v, bn, last_ts=None) -> dict:
+    """Lo que el juez ve de un listado (sin los campos vacíos)."""
+    extra = row_extra(row)
+    mpns = [row["mpn"]] if row["mpn"] else extract_mpns(f"{row['title']} {spec_text(row)}")
+    cand = {
+        "id": row["id"],
+        "title": row["title"],
+        "mpn": mpns[0] if mpns else None,
+        "gpu": v.gpu,
+        "cpu": f"{v.cpu} (nivel {v.cpu_tier[-1]})" if v.cpu else None,
+        "store": row["store"],
+        "store_type": "chica" if v.small_store else "grande",
+        "store_rating": extra.get("store_rating"),
+        "store_reviews": extra.get("store_reviews"),
+        "review_service": extra.get("review_service"),
+        "payments": extra.get("payments") or None,
+        "price_total": row["price"],
+        "base_price": row["base_price"] if row["base_price"] != row["price"] else None,
+        "shipping": row["shipping"],
+        "availability": extra.get("availability") or extra.get("stock"),
+        "delivery": extra.get("delivery"),
+        "coupon": extra.get("coupon"),
+        "specs": extra.get("specs") or extra.get("desc") or None,
+        "flags": v.flags or None,
+        "marks": all_marks(v, bn) or None,
+        "buy_now": True if bn and bn.ok else None,
+        "buy_now_failed": bn.failed + [f"falta {m}" for m in bn.missing] if bn and not bn.ok else None,
+        "source": row["source"],
+        "first_seen": row["first_seen"][:10],
+        "new_since_last_judgment": last_ts is None or row["first_seen"] > last_ts,
+        "prev_price": row["prev_price"],
+        "min_price_seen": row["min_price"] if row["min_price"] != row["price"] else None,
+    }
+    return {k: val for k, val in cand.items() if val not in (None, [], {}, "")}
 
 
 def notified_history(db, days=10):
@@ -134,7 +138,13 @@ def build_prompt(cfg, cands, mode, history, instructions=None):
         state = ("ya llegó: hay que decidir hoy" if today >= d["decide_by"]
                  else f"faltan {(d['decide_by'] - today).days} días")
         decide = f"\n- Fecha para decidir la compra: {d['decide_by']} ({state})"
-    if mode == "decide":
+    if mode == "quick":
+        rules = (
+            "MODO VEREDICTO RÁPIDO: el único candidato acaba de disparar una alerta inmediata y el comprador está "
+            "decidiendo ahora. Seguí la sección \"Modo veredicto rápido\": notify=true y picks con ese solo producto "
+            "(verdict comprar, considerar o evitar). La referencia, el plan B y las otras opciones son para comparar."
+        )
+    elif mode == "decide":
         pc_opt = plan_c(cfg)
         backup = (f"el Plan C ({pc_opt['name']}, {fmt_eur(pc_opt['price'])} en {pc_opt['where']})" if pc_opt
                   else "no hay Plan C definido")

@@ -1,39 +1,23 @@
 """Veredicto rápido: tras una alerta inmediata, el juez revisa solo ese producto y responde a la alerta.
 
-Corre en segundo plano (no frena el scrape ni las alertas) y nunca descarta nada: solo informa.
-main() espera a que terminen antes de salir, para que systemd no los corte.
+Usa judge_prompt.md (su sección "Modo veredicto rápido") y el mismo formato que el juez diario, con
+"evitar" además de "comprar" y "considerar". Corre en segundo plano (no frena el scrape ni las alertas)
+y nunca descarta nada: solo informa. main() espera a que terminen antes de salir, para que systemd no
+los corte.
 """
-import json
+import copy
 from concurrent.futures import ThreadPoolExecutor
 
 from . import notify
-from .judge import call_claude
+from .judge import SCHEMA as JUDGE_SCHEMA
+from .judge import build_prompt, call_claude, candidate
 from .notify import esc
-from .prefilter import all_marks, product_key, row_extra, spec_text
-from .util import fmt_eur, log, squash, today_rome
+from .prefilter import product_key
+from .util import fmt_eur, log, squash
 
-SCHEMA = {
-    "type": "object",
-    "properties": {
-        "verdict": {"type": "string", "enum": ["parece bien", "dudoso", "sospechoso"]},
-        "summary": {"type": "string"},
-        "checks": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "aspect": {"type": "string"},
-                    "status": {"type": "string", "enum": ["ok", "riesgo", "sin datos"]},
-                    "detail": {"type": "string"},
-                },
-                "required": ["aspect", "status", "detail"],
-            },
-        },
-    },
-    "required": ["verdict", "summary", "checks"],
-}
-VERDICT_ICONS = {"parece bien": "✅", "dudoso": "⚠️", "sospechoso": "🚩"}
-CHECK_ICONS = {"ok": "✅", "riesgo": "⚠️", "sin datos": "❔"}
+SCHEMA = copy.deepcopy(JUDGE_SCHEMA)
+SCHEMA["properties"]["picks"]["items"]["properties"]["verdict"]["enum"].append("evitar")
+VERDICTS = {"comprar": "🟢 COMPRAR", "considerar": "🟡 CONSIDERAR", "evitar": "🔴 EVITAR"}
 MAX_PARALLEL = 2
 
 _pool = None
@@ -67,61 +51,25 @@ def wait():
     _jobs.clear()
 
 
-def build_prompt(cfg, row, v, bn):
-    extra = row_extra(row)
-    d = cfg.dates
-    product = {
-        "title": row["title"], "mpn": row["mpn"], "store": row["store"], "source": row["source"], "url": row["url"],
-        "price_total": row["price"], "base_price": row["base_price"], "shipping": row["shipping"],
-        "availability": extra.get("availability") or extra.get("stock"), "delivery": extra.get("delivery"),
-        "specs": squash(spec_text(row), 800) or None, "store_rating": extra.get("store_rating"),
-        "store_reviews": extra.get("store_reviews"), "gpu": v.gpu,
-        "cpu": f"{v.cpu} (nivel {v.cpu_tier[-1]})" if v.cpu else None,
-        "marks": all_marks(v, bn) or None, "flags": v.flags or None,
-        "buy_now_failed": bn.failed + [f"falta {m}" for m in bn.missing] if bn and not bn.ok else None,
-    }
-    product = {k: val for k, val in product.items() if val not in (None, [], {}, "")}
-    return f"""# Rol
-
-Sos un verificador rápido de ofertas de notebooks en tiendas italianas. Acaba de salir una alerta automática
-(sin juez) por este producto y el comprador puede decidir en minutos. Revisá SOLO este producto, usando
-WebSearch y WebFetch, y respondé en español rioplatense, conciso y concreto. No descartes: tu trabajo es informar.
-
-El comprador compra en Italia y necesita la notebook entregada en un domicilio en Italia como tarde el
-{d['deliver_by']} (hoy es {today_rome()}). Uso: gaming + IA local + Linux.
-
-# Qué revisar (un elemento de checks por cada punto)
-
-1. Vendedor y envío reales: quién vende y quién envía (en Amazon, "venduto e spedito da Amazon" o un
-   vendedor tercero), y el plazo de entrega real frente a la fecha límite.
-2. Reseñas recientes del vendedor y del producto, sobre todo quejas de "llegó otro producto" o un modelo distinto.
-3. Coherencia de la ficha: cargador incluido, specs (GPU y su TGP, CPU, RAM, SSD, pantalla) que coincidan con el
-   MPN, contenido de la caja.
-4. Si el precio es razonable para esa GPU y CPU en el mercado italiano de hoy.
-5. Qué significa cada marca del producto (⚠️ sospechoso = precio bajo para esa GPU; 🏷️ palabra = encontrada en
-   título, specs o etiquetas de la tienda, p. ej. outlet, esposto, reso). Si no hay marcas, decilo.
-
-verdict: "parece bien", "dudoso" o "sospechoso". summary: una o dos oraciones con lo más importante.
-
-# Producto
-
-{json.dumps(product, ensure_ascii=False, indent=1)}
-"""
-
-
 def render(row, out):
-    lines = [f"🔎 <b>Veredicto rápido: {VERDICT_ICONS.get(out.get('verdict'), '❔')} {esc(out.get('verdict'))}</b>",
-             f"<i>{esc(squash(row['title'], 90))} · {fmt_eur(row['price'])} · {esc(row['store'])}</i>",
-             esc(out.get("summary"))]
-    lines += [f"{CHECK_ICONS.get(c['status'], '❔')} <b>{esc(c['aspect'])}</b>: {esc(c['detail'])}"
-              for c in out.get("checks") or []]
+    product = f"<i>{esc(squash(row['title'], 90))} · {fmt_eur(row['price'])} · {esc(row['store'])}</i>"
+    pick = next((p for p in out.get("picks") or [] if p["id"] == row["id"]), None)
+    if pick is None:
+        lines = ["🔎 <b>Veredicto rápido: sin conclusión</b>", product, esc(out.get("headline"))]
+    else:
+        lines = [f"🔎 <b>Veredicto rápido: {VERDICTS.get(pick['verdict'], esc(pick['verdict']))}</b>", product,
+                 f"✅ {esc(pick['reason'])}" if pick["verdict"] != "evitar" else f"⛔ {esc(pick['reason'])}"]
+        lines += [f"⚠️ {esc(r)}" for r in pick.get("risks") or []]
+    if out.get("notes"):
+        lines.append(f"📝 {esc(out['notes'])}")
     return "\n".join(lines)
 
 
 def _run(cfg, row, v, bn, reply_to):
     timeout = (cfg.get("instant_alerts") or {}).get("quick_judge_timeout_minutes", 8)
     try:
-        text = render(row, call_claude(cfg, build_prompt(cfg, row, v, bn), schema=SCHEMA, timeout_minutes=timeout))
+        prompt = build_prompt(cfg, [candidate(row, v, bn)], "quick", [])
+        text = render(row, call_claude(cfg, prompt, schema=SCHEMA, timeout_minutes=timeout))
     except Exception as e:
         log.warning("veredicto rápido de %r falló: %s", row["title"][:60], e)
         text = (f"🔎 <b>Veredicto rápido</b>: no salió ({esc(squash(str(e), 200))}).\n"
